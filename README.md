@@ -1,0 +1,1 @@
+cd /home/murari-itr/Desktop/MVP/StandupSync/backend && ./venv/bin/python3 -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
