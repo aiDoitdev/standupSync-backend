@@ -1,11 +1,10 @@
-import asyncio
 import os
 import sys
 from logging.config import fileConfig
 from pathlib import Path
 
 from alembic import context
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy import create_engine
 
 # Ensure the backend root is on sys.path so both old and new imports resolve.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -30,7 +29,7 @@ def _get_url() -> str:
     raw = os.getenv("DATABASE_URL", "")
     if not raw:
         raise RuntimeError("DATABASE_URL is not set")
-    return raw.replace("postgresql://", "postgresql+asyncpg://", 1)
+    return raw  # Use sync driver for migrations
 
 
 def run_migrations_offline() -> None:
@@ -56,18 +55,15 @@ def do_run_migrations(connection) -> None:
         context.run_migrations()
 
 
-async def run_migrations_online() -> None:
+def run_migrations_online() -> None:
     """Connect to the DB and run pending migrations."""
-    connectable = create_async_engine(
-        _get_url(),
-        connect_args={"prepared_statement_cache_size": 0},
-    )
-    async with connectable.connect() as connection:
-        await connection.run_sync(do_run_migrations)
-    await connectable.dispose()
+    # Use sync driver (psycopg2) to avoid pgbouncer prepared statement issues
+    connectable = create_engine(_get_url())
+    with connectable.begin() as connection:
+        do_run_migrations(connection)
 
 
 if context.is_offline_mode():
     run_migrations_offline()
 else:
-    asyncio.run(run_migrations_online())
+    run_migrations_online()

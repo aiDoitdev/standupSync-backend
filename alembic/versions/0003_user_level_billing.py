@@ -55,7 +55,7 @@ def upgrade() -> None:
             postgresql.UUID(as_uuid=True),
             sa.ForeignKey("users.id", ondelete="CASCADE"),
             nullable=False,
-            server_default="'00000000-0000-0000-0000-000000000000'",
+            server_default="00000000-0000-0000-0000-000000000000",
         ),
     )
     op.alter_column("subscriptions", "user_id", server_default=None)
@@ -76,14 +76,15 @@ def upgrade() -> None:
 
     # ── 4. Drop billing fields from teams ─────────────────────────────────────
     # Drop CHECK constraints added in migration 0002 before dropping columns.
-    op.drop_constraint("ck_teams_plan", "teams", type_="check")
-    op.drop_constraint("ck_teams_plan_status", "teams", type_="check")
-    op.drop_column("teams", "plan")
-    op.drop_column("teams", "plan_status")
-    op.drop_column("teams", "plan_expires_at")
-    op.drop_column("teams", "ls_customer_id")
-    op.drop_column("teams", "ls_subscription_id")
-    op.drop_column("teams", "ls_variant_id")
+    # Use IF EXISTS to handle partial migrations where 0002 was stamped but not fully applied.
+    op.execute("ALTER TABLE teams DROP CONSTRAINT IF EXISTS ck_teams_plan")
+    op.execute("ALTER TABLE teams DROP CONSTRAINT IF EXISTS ck_teams_plan_status")
+    op.drop_column("teams", "plan", if_exists=True)
+    op.drop_column("teams", "plan_status", if_exists=True)
+    op.drop_column("teams", "plan_expires_at", if_exists=True)
+    op.drop_column("teams", "ls_customer_id", if_exists=True)
+    op.drop_column("teams", "ls_subscription_id", if_exists=True)
+    op.drop_column("teams", "ls_variant_id", if_exists=True)
 
 
 def downgrade() -> None:
