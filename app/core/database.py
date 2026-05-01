@@ -14,6 +14,7 @@ engine = create_async_engine(
     echo=False,
     json_serializer=None,
     json_deserializer=None,
+    disable_prepared_statement_cache=True,
     connect_args={
         "prepared_statement_cache_size": 0,
         "prepared_statement_name_func": lambda: "",
