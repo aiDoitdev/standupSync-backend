@@ -12,8 +12,6 @@ _settings = get_settings()
 engine = create_async_engine(
     _settings.database_url_async,
     echo=False,
-    json_serializer=None,
-    json_deserializer=None,
     connect_args={
         "prepared_statement_cache_size": 0,
         "prepared_statement_name_func": lambda: "",
