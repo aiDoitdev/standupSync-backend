@@ -40,8 +40,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _require_starter(team: Team) -> None:
-    _require_starter_base(team, "Automation Radar")
+def _require_starter(manager: User) -> None:
+    _require_starter_base(manager, "Automation Radar")
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +138,7 @@ async def list_analysis_history(
 ):
     """Return the last 20 automation analysis runs for a team. Starter plan only."""
     team, _ = await require_team_manager(team_id, current_user, db)
-    _require_starter(team)
+    _require_starter(current_user)
 
     result = await db.execute(
         select(AutomationAnalysis)
@@ -180,7 +180,7 @@ async def run_analysis(
     (Monday–Sunday). Starter plan only. Returns stored findings immediately.
     """
     team, _ = await require_team_manager(team_id, current_user, db)
-    _require_starter(team)
+    _require_starter(current_user)
 
     # ── Weekly throttle ──────────────────────────────────────────────────────
     today = date.today()
@@ -355,7 +355,7 @@ async def get_analysis_detail(
 ):
     """Return full detail (including findings) of a specific analysis run. Starter plan only."""
     team, _ = await require_team_manager(team_id, current_user, db)
-    _require_starter(team)
+    _require_starter(current_user)
 
     result = await db.execute(
         select(AutomationAnalysis).where(

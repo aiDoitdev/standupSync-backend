@@ -199,33 +199,33 @@ async def reconcile_subscriptions() -> None:
     async with AsyncSessionLocal() as db:
         # ── 1. Expire grace periods that have passed ──────────────────────────
         grace_result = await db.execute(
-            select(Team).where(
+            select(User).where(
                 and_(
-                    Team.plan_status == "canceled",
-                    Team.plan_expires_at.isnot(None),
-                    Team.plan_expires_at <= now_utc,
+                    User.plan_status == "canceled",
+                    User.plan_expires_at.isnot(None),
+                    User.plan_expires_at <= now_utc,
                 )
             )
         )
-        for team in grace_result.scalars().all():
-            team.plan             = "free"
-            team.plan_expires_at  = None
-            db.add(team)
-            logger.info("reconcile.grace_period_expired", team_id=str(team.id))
+        for user in grace_result.scalars().all():
+            user.plan            = "free"
+            user.plan_expires_at = None
+            db.add(user)
+            logger.info("reconcile.grace_period_expired", user_id=str(user.id))
 
         # ── 2. Re-check active Starter subscriptions against LS API ──────────
         active_result = await db.execute(
-            select(Team).where(
-                and_(Team.plan == "starter", Team.ls_subscription_id.isnot(None))
+            select(User).where(
+                and_(User.plan == "starter", User.ls_subscription_id.isnot(None))
             )
         )
-        active_teams = active_result.scalars().all()
+        active_users = active_result.scalars().all()
 
-    for team in active_teams:
+    for user in active_users:
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.get(
-                    f"{LS_API_BASE}/subscriptions/{team.ls_subscription_id}",
+                    f"{LS_API_BASE}/subscriptions/{user.ls_subscription_id}",
                     headers=_ls_headers(),
                     timeout=10.0,
                 )
@@ -238,18 +238,18 @@ async def reconcile_subscriptions() -> None:
                 attrs.get("current_period_end") or attrs.get("ends_at") or attrs.get("renews_at")
             )
 
-            if ls_status in ("cancelled", "expired") and team.plan_status == "active":
+            if ls_status in ("cancelled", "expired") and user.plan_status == "active":
                 async with AsyncSessionLocal() as db:
-                    fresh = await db.execute(select(Team).where(Team.id == team.id))
-                    t = fresh.scalar_one_or_none()
-                    if t:
-                        t.plan_status      = "canceled"
-                        t.plan_expires_at  = period_end
-                        t.ls_subscription_id = None
-                        db.add(t)
+                    fresh = await db.execute(select(User).where(User.id == user.id))
+                    u = fresh.scalar_one_or_none()
+                    if u:
+                        u.plan_status        = "canceled"
+                        u.plan_expires_at    = period_end
+                        u.ls_subscription_id = None
+                        db.add(u)
                         db.add(Subscription(
-                            team_id=t.id,
-                            ls_subscription_id=team.ls_subscription_id,
+                            user_id=u.id,
+                            ls_subscription_id=user.ls_subscription_id,
                             plan="starter", status="canceled",
                             current_period_end=period_end,
                             canceled_at=now_utc,
@@ -257,15 +257,15 @@ async def reconcile_subscriptions() -> None:
                         await db.commit()
                         logger.info(
                             "reconcile.subscription_corrected",
-                            team_id=str(t.id), ls_status=ls_status,
+                            user_id=str(u.id), ls_status=ls_status,
                         )
         except Exception as exc:
-            logger.warning("reconcile.team_check_failed", team_id=str(team.id), error=str(exc))
+            logger.warning("reconcile.user_check_failed", user_id=str(user.id), error=str(exc))
 
     async with AsyncSessionLocal() as db:
         await db.commit()
 
-    logger.info("reconcile.done", checked=len(active_teams))
+    logger.info("reconcile.done", checked=len(active_users))
 
 
 def start_scheduler() -> None:

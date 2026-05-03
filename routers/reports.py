@@ -31,8 +31,8 @@ def _parse_date_range(start_date: Optional[str], end_date: Optional[str]) -> tup
     return start_d, end_d, period_days
 
 
-def _require_starter(team: Team) -> None:
-    _require_starter_base(team, "Reports")
+def _require_starter(manager: User) -> None:
+    _require_starter_base(manager, "Reports")
 
 
 def _week_monday(d: date) -> str:
@@ -143,7 +143,9 @@ async def team_summary(
 ):
     """Return team-level analytics. Requires Starter plan."""
     team, _ = await require_team_access(team_id, current_user, db)
-    _require_starter(team)
+    mgr_result = await db.execute(select(User).where(User.id == team.manager_id))
+    team_manager = mgr_result.scalar_one()
+    _require_starter(team_manager)
 
     since, today, period_days = _parse_date_range(start_date, end_date)
 
@@ -325,7 +327,7 @@ async def team_summary(
     )
 
     return {
-        "team": {"id": str(team.id), "name": team.name, "plan": team.plan},
+        "team": {"id": str(team.id), "name": team.name, "plan": team_manager.plan},
         "period_days": period_days,
         "start_date": str(since),
         "end_date": str(today),
@@ -376,7 +378,7 @@ async def cost_intelligence(
     Requires Starter plan. Manager-only.
     """
     team, _ = await require_team_manager(team_id, current_user, db)
-    _require_starter(team)
+    _require_starter(current_user)
 
     since, today, period_days = _parse_date_range(start_date, end_date)
 
@@ -391,7 +393,7 @@ async def cost_intelligence(
 
     if total_members == 0:
         return {
-            "team": {"id": str(team.id), "name": team.name, "plan": team.plan},
+            "team": {"id": str(team.id), "name": team.name, "plan": current_user.plan},
             "period_days": period_days,
             "summary": {
                 "total_members": 0,
@@ -486,7 +488,7 @@ async def cost_intelligence(
     )
 
     return {
-        "team": {"id": str(team.id), "name": team.name, "plan": team.plan},
+        "team": {"id": str(team.id), "name": team.name, "plan": current_user.plan},
         "period_days": period_days,
         "summary": {
             "total_members": total_members,
@@ -517,7 +519,7 @@ async def blocked_cost(
     Starter plan only. Manager-only.
     """
     team, _ = await require_team_manager(team_id, current_user, db)
-    _require_starter(team)
+    _require_starter(current_user)
 
     since, today, period_days = _parse_date_range(start_date, end_date)
     now = datetime.utcnow()
@@ -647,7 +649,7 @@ async def monthly_cost(
     Manager-only, Starter plan required.
     """
     team, _ = await require_team_manager(team_id, current_user, db)
-    _require_starter(team)
+    _require_starter(current_user)
 
     now = datetime.utcnow()
 
@@ -753,7 +755,7 @@ async def participation_trend(
     Starter plan only. Manager-only.
     """
     team, _ = await require_team_manager(team_id, current_user, db)
-    _require_starter(team)
+    _require_starter(current_user)
 
     since, today, period_days = _parse_date_range(start_date, end_date)
 

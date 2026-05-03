@@ -141,8 +141,10 @@ async def checkin_history(
     Free plan is capped at 7 days; Starter plan allows up to 30 days."""
     team, _ = await require_team_access(team_id, current_user, db)
 
-    # Enforce plan-based limits server-side
-    max_days = 30 if (team.plan == "starter" and team.plan_status == "active") else 7
+    # Enforce plan-based limits server-side — billing lives on the manager user
+    mgr_result = await db.execute(select(User).where(User.id == team.manager_id))
+    team_mgr = mgr_result.scalar_one_or_none()
+    max_days = 30 if (team_mgr and team_mgr.plan == "starter" and team_mgr.plan_status == "active") else 7
     days = min(days, max_days)
 
     # Confirm the member belongs to the team

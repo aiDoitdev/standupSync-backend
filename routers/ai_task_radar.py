@@ -52,8 +52,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _require_starter(team: Team) -> None:
-    _require_starter_base(team, "Ai Task Radar")
+def _require_starter(manager: User) -> None:
+    _require_starter_base(manager, "Ai Task Radar")
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +155,7 @@ async def get_schedule(
     db: AsyncSession = Depends(get_db),
 ):
     team, _ = await require_team_manager(team_id, current_user, db)
-    _require_starter(team)
+    _require_starter(current_user)
 
     result = await db.execute(select(AutomationSchedule).where(AutomationSchedule.team_id == team.id))
     sched = result.scalar_one_or_none()
@@ -188,7 +188,7 @@ async def upsert_schedule(
     an immediate analysis so the manager sees results right away.
     """
     team, _ = await require_team_manager(team_id, current_user, db)
-    _require_starter(team)
+    _require_starter(current_user)
 
     if data.cadence == "monthly" and not data.week_of_month:
         raise HTTPException(
@@ -268,7 +268,7 @@ async def list_history(
     db: AsyncSession = Depends(get_db),
 ):
     team, _ = await require_team_manager(team_id, current_user, db)
-    _require_starter(team)
+    _require_starter(current_user)
 
     result = await db.execute(
         select(AutomationAnalysis)
@@ -292,7 +292,7 @@ async def get_analysis_detail(
     db: AsyncSession = Depends(get_db),
 ):
     team, _ = await require_team_manager(team_id, current_user, db)
-    _require_starter(team)
+    _require_starter(current_user)
 
     analysis_result = await db.execute(
         select(AutomationAnalysis).where(
@@ -337,7 +337,7 @@ async def get_member_detail(
     back by the LLM when a task couldn't be mapped to a known user.
     """
     team, _ = await require_team_manager(team_id, current_user, db)
-    _require_starter(team)
+    _require_starter(current_user)
 
     analysis_result = await db.execute(
         select(AutomationAnalysis).where(
@@ -400,7 +400,7 @@ async def admin_run_analysis(
             detail="Admin run is disabled. Set AI_TASK_RADAR_ADMIN_RUN=1 to enable.",
         )
     team, _ = await require_team_manager(team_id, current_user, db)
-    _require_starter(team)
+    _require_starter(current_user)
 
     record = await run_team_analysis(
         db,
@@ -428,7 +428,7 @@ async def list_integrations(
     """List integration providers with current status. Always returns the full 3 for the
     stub panel — unconfigured providers are reported as 'coming_soon'."""
     team, _ = await require_team_manager(team_id, current_user, db)
-    _require_starter(team)
+    _require_starter(current_user)
 
     rows_result = await db.execute(
         select(AutomationIntegration).where(AutomationIntegration.team_id == team.id)

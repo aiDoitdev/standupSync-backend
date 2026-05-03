@@ -12,23 +12,25 @@ if not _raw_url:
 # asyncpg requires the postgresql+asyncpg:// scheme
 DATABASE_URL = _raw_url.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-# Supabase uses PgBouncer in transaction mode. SQLAlchemy's asyncpg adapter
-# still prepares statements during connection setup, so disable the internal
-# asyncpg prepared statement cache and force unnamed statement execution.
+# Supabase Supavisor runs in transaction-pooling mode, which does not support
+# named prepared statements. Two layers must be disabled:
 #
-# json_serializer/json_deserializer=None prevents SA's asyncpg dialect from
-# installing the jsonb codec on every new connection (the codec setup runs
-# prepared-statement introspection under the hood, which pgbouncer rejects).
-# The project stores JSON as TEXT with explicit json.dumps / json.loads, so
-# we don't need the dialect-level JSON plumbing.
+# 1. prepared_statement_cache_size=0 — turns off SQLAlchemy's own wrapper cache
+#    so it calls asyncpg.prepare() with an empty name (unnamed = no server-side
+#    persistence) for application queries.
+#
+# 2. statement_cache_size=0 — asyncpg's native cache size, passed through to
+#    asyncpg.connect(). Without this, asyncpg still creates named prepared
+#    statements (e.g. __asyncpg_stmt_3__) internally for type-codec introspection
+#    on every new connection, which fails with DuplicatePreparedStatementError
+#    when Supavisor hands back a recycled server connection.
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,
-    json_serializer=None,
-    json_deserializer=None,
     connect_args={
         "prepared_statement_cache_size": 0,
         "prepared_statement_name_func": lambda: "",
+        "statement_cache_size": 0,
     },
 )
 AsyncSessionLocal = sessionmaker(

@@ -67,7 +67,7 @@ def _parse_ls_datetime(value: str | None) -> datetime | None:
         return None
 
 
-# ── Checkout ─────────────────────────────────────────────────────────────────
+# ── Checkout ──────────────────────────────��─────────────────────────────��────
 
 @router.post("/checkout", response_model=CheckoutResponse)
 @limiter.limit("5/minute")
@@ -77,14 +77,14 @@ async def create_checkout(
     current_user: User = Depends(require_manager),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create a Lemon Squeezy checkout session for upgrading a team to Starter."""
+    """Create a Lemon Squeezy checkout session for upgrading to Starter."""
     log = logger.bind(team_id=data.team_id, user_id=str(current_user.id))
     team, _ = await require_team_manager(data.team_id, current_user, db)
 
-    if team.plan == "starter" and team.plan_status == "active":
+    if current_user.plan == "starter" and current_user.plan_status == "active":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This team is already on the Starter plan.",
+            detail="Your account is already on the Starter plan.",
         )
 
     if not LS_API_KEY or not LS_STORE_ID or not LS_STARTER_VARIANT_ID:
@@ -136,7 +136,7 @@ async def create_checkout(
     return CheckoutResponse(checkout_url=checkout_url)
 
 
-# ── Customer portal ───────────────────────────────────────────────────────────
+# ── Customer portal ─────────────────────────────────���─────────────────────────
 
 @router.post("/portal", response_model=PortalResponse)
 @limiter.limit("10/minute")
@@ -148,17 +148,16 @@ async def create_portal_session(
 ):
     """Return the Lemon Squeezy customer-portal URL for managing the subscription."""
     log = logger.bind(team_id=data.team_id, user_id=str(current_user.id))
-    team, _ = await require_team_manager(data.team_id, current_user, db)
 
-    if not team.ls_customer_id or not team.ls_subscription_id:
+    if not current_user.ls_customer_id or not current_user.ls_subscription_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No active subscription found for this team.",
+            detail="No active subscription found for your account.",
         )
 
     async with httpx.AsyncClient() as client:
         resp = await client.get(
-            f"{LS_API_BASE}/subscriptions/{team.ls_subscription_id}",
+            f"{LS_API_BASE}/subscriptions/{current_user.ls_subscription_id}",
             headers=_ls_headers(),
             timeout=15.0,
         )
@@ -182,22 +181,28 @@ async def billing_status(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Return the current billing plan and status for a team."""
+    """Return the current billing plan and status for the team's owning manager."""
     result = await db.execute(select(Team).where(Team.id == team_id))
     team = result.scalar_one_or_none()
     if not team:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team not found")
 
+    # Fetch the manager's billing info — billing lives on the user, not the team
+    manager_result = await db.execute(select(User).where(User.id == team.manager_id))
+    manager = manager_result.scalar_one_or_none()
+    if not manager:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team manager not found")
+
     return BillingStatusResponse(
-        plan=team.plan or "free",
-        plan_status=team.plan_status or "active",
-        ls_subscription_id=team.ls_subscription_id,
-        ls_customer_id=team.ls_customer_id,
-        plan_expires_at=team.plan_expires_at,
+        plan=manager.plan or "free",
+        plan_status=manager.plan_status or "active",
+        ls_subscription_id=manager.ls_subscription_id,
+        ls_customer_id=manager.ls_customer_id,
+        plan_expires_at=manager.plan_expires_at,
     )
 
 
-# ── Webhook ───────────────────────────────────────────────────────────────────
+# ── Webhook ────────────────────────────────��───────────────────────────────��──
 
 @router.post("/webhook")
 async def lemon_squeezy_webhook(request: Request, db: AsyncSession = Depends(get_db)):
@@ -223,7 +228,7 @@ async def lemon_squeezy_webhook(request: Request, db: AsyncSession = Depends(get
 
     log = logger.bind(event_name=event_name, event_id=event_id)
 
-    # ── Idempotency check ─────────────────────────────────────────────────────
+    # ── Idempotency check ──────────────────────────────��──────────────────────
     if event_id:
         existing = await db.execute(
             select(WebhookEvent).where(WebhookEvent.event_id == event_id)
@@ -232,45 +237,45 @@ async def lemon_squeezy_webhook(request: Request, db: AsyncSession = Depends(get
             log.info("billing.webhook.duplicate_skipped")
             return {"status": "ok", "note": "duplicate"}
 
-    # ── Persist raw event for audit trail ─────────────────────────────────────
-    team_id_str = custom_data.get("team_id") or ""
+    # ── Resolve user — billing is per user (manager), not per team ────────────
+    user_id_str = custom_data.get("user_id") or ""
 
-    # For renewal/status events the team_id may not be in custom_data;
+    # For renewal/status events user_id may not be in custom_data;
     # fall back to looking up by subscription ID.
-    if not team_id_str:
+    if not user_id_str:
         ls_sub_id = str(event.get("data", {}).get("id", ""))
         if ls_sub_id:
             found = await db.execute(
-                select(Team).where(Team.ls_subscription_id == ls_sub_id)
+                select(User).where(User.ls_subscription_id == ls_sub_id)
             )
-            team_obj = found.scalar_one_or_none()
-            if team_obj:
-                team_id_str = str(team_obj.id)
+            user_obj = found.scalar_one_or_none()
+            if user_obj:
+                user_id_str = str(user_obj.id)
 
     if event_id:
         db.add(WebhookEvent(
             event_id=event_id,
             event_name=event_name,
-            team_id=team_id_str or None,
+            user_id=user_id_str or None,
             payload=raw_body.decode("utf-8"),
         ))
         # Flush now so the unique constraint fires before we do any more work;
         # commit happens at the end of the handler.
         await db.flush()
 
-    log = log.bind(team_id=team_id_str)
+    log = log.bind(user_id=user_id_str)
 
-    if not team_id_str:
-        log.warning("billing.webhook.no_team_id")
+    if not user_id_str:
+        log.warning("billing.webhook.no_user_id")
         await db.commit()
-        return {"status": "ignored", "reason": "no team_id"}
+        return {"status": "ignored", "reason": "no user_id"}
 
-    result = await db.execute(select(Team).where(Team.id == team_id_str))
-    team = result.scalar_one_or_none()
-    if not team:
-        log.warning("billing.webhook.team_not_found")
+    result = await db.execute(select(User).where(User.id == user_id_str))
+    user = result.scalar_one_or_none()
+    if not user:
+        log.warning("billing.webhook.user_not_found")
         await db.commit()
-        return {"status": "ignored", "reason": "team not found"}
+        return {"status": "ignored", "reason": "user not found"}
 
     ls_sub_id    = str(event.get("data", {}).get("id", ""))
     ls_cust_id   = str(attributes.get("customer_id", ""))
@@ -278,19 +283,19 @@ async def lemon_squeezy_webhook(request: Request, db: AsyncSession = Depends(get
     period_start = _parse_ls_datetime(attributes.get("current_period_start") or attributes.get("created_at"))
     period_end   = _parse_ls_datetime(attributes.get("current_period_end") or attributes.get("ends_at") or attributes.get("renews_at"))
 
-    # ── Event handlers ────────────────────────────────────────────────────────
+    # ── Event handlers ────────────────────────────────────────────────────��───
 
     if event_name == "subscription_created":
-        team.plan             = "starter"
-        team.plan_status      = "active"
-        team.plan_expires_at  = None
-        team.ls_subscription_id = ls_sub_id
-        team.ls_customer_id   = ls_cust_id
-        team.ls_variant_id    = ls_var_id
-        db.add(team)
+        user.plan              = "starter"
+        user.plan_status       = "active"
+        user.plan_expires_at   = None
+        user.ls_subscription_id = ls_sub_id
+        user.ls_customer_id    = ls_cust_id
+        user.ls_variant_id     = ls_var_id
+        db.add(user)
 
         db.add(Subscription(
-            team_id=team.id, ls_subscription_id=ls_sub_id,
+            user_id=user.id, ls_subscription_id=ls_sub_id,
             ls_customer_id=ls_cust_id, ls_variant_id=ls_var_id,
             plan="starter", status="active",
             current_period_start=period_start, current_period_end=period_end,
@@ -301,27 +306,26 @@ async def lemon_squeezy_webhook(request: Request, db: AsyncSession = Depends(get
         ls_status = attributes.get("status", "")
 
         if ls_status == "active":
-            team.plan             = "starter"
-            team.plan_status      = "active"
-            team.plan_expires_at  = None
-            team.ls_subscription_id = ls_sub_id
-            team.ls_customer_id   = ls_cust_id
+            user.plan              = "starter"
+            user.plan_status       = "active"
+            user.plan_expires_at   = None
+            user.ls_subscription_id = ls_sub_id
+            user.ls_customer_id    = ls_cust_id
 
         elif ls_status == "past_due":
-            team.plan_status = "past_due"
+            user.plan_status = "past_due"
 
         elif ls_status in ("cancelled", "expired"):
             # Grace period: keep Starter features until the billing period ends
-            grace_until = period_end
-            team.plan             = "starter"   # still on starter until grace period expires
-            team.plan_status      = "canceled"
-            team.plan_expires_at  = grace_until
-            team.ls_subscription_id = None
+            user.plan              = "starter"   # still on starter until grace period expires
+            user.plan_status       = "canceled"
+            user.plan_expires_at   = period_end
+            user.ls_subscription_id = None
 
-        db.add(team)
+        db.add(user)
 
         db.add(Subscription(
-            team_id=team.id, ls_subscription_id=ls_sub_id,
+            user_id=user.id, ls_subscription_id=ls_sub_id,
             ls_customer_id=ls_cust_id, ls_variant_id=ls_var_id,
             plan="starter" if ls_status not in ("cancelled", "expired") else "free",
             status=ls_status,
@@ -331,30 +335,29 @@ async def lemon_squeezy_webhook(request: Request, db: AsyncSession = Depends(get
         log.info("billing.webhook.subscription_updated", ls_status=ls_status)
 
     elif event_name == "subscription_cancelled":
-        grace_until = period_end
-        team.plan             = "starter"   # access retained until billing period ends
-        team.plan_status      = "canceled"
-        team.plan_expires_at  = grace_until
-        team.ls_subscription_id = None
-        db.add(team)
+        user.plan              = "starter"   # access retained until billing period ends
+        user.plan_status       = "canceled"
+        user.plan_expires_at   = period_end
+        user.ls_subscription_id = None
+        db.add(user)
 
         db.add(Subscription(
-            team_id=team.id, ls_subscription_id=ls_sub_id,
+            user_id=user.id, ls_subscription_id=ls_sub_id,
             ls_customer_id=ls_cust_id, ls_variant_id=ls_var_id,
             plan="starter", status="canceled",
             current_period_start=period_start, current_period_end=period_end,
             canceled_at=datetime.utcnow(),
         ))
-        log.info("billing.webhook.subscription_cancelled", grace_until=str(grace_until))
+        log.info("billing.webhook.subscription_cancelled", grace_until=str(period_end))
 
     elif event_name == "subscription_payment_failed":
-        team.plan_status = "past_due"
-        db.add(team)
+        user.plan_status = "past_due"
+        db.add(user)
 
         db.add(Subscription(
-            team_id=team.id, ls_subscription_id=ls_sub_id,
+            user_id=user.id, ls_subscription_id=ls_sub_id,
             ls_customer_id=ls_cust_id, ls_variant_id=ls_var_id,
-            plan=team.plan, status="past_due",
+            plan=user.plan, status="past_due",
             current_period_start=period_start, current_period_end=period_end,
         ))
         log.warning("billing.webhook.payment_failed")

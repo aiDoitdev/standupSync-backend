@@ -14,6 +14,13 @@ class User(Base):
     password = Column(String(255), nullable=False)  # bcrypt hashed
     role = Column(String(20), default="member")      # 'manager' | 'member'
     created_at = Column(DateTime, default=datetime.utcnow)
+    # Account-level billing — one subscription covers all teams this manager owns
+    plan               = Column(String(20), default="free")
+    plan_status        = Column(String(20), default="active")
+    plan_expires_at    = Column(DateTime, nullable=True)
+    ls_customer_id     = Column(String(255), nullable=True)
+    ls_subscription_id = Column(String(255), nullable=True)
+    ls_variant_id      = Column(String(255), nullable=True)
 
 
 class Team(Base):
@@ -24,13 +31,6 @@ class Team(Base):
     manager_id = Column(UUID(as_uuid=True), ForeignKey("users.id"))
     # timezone kept for backward compatibility; per-member timezone now lives on TeamMember
     timezone = Column(String(100), default="Asia/Kolkata")
-    plan = Column(String(20), default="free")  # 'free' | 'starter'
-    plan_status = Column(String(20), default="active")  # 'active' | 'past_due' | 'canceled'
-    # Grace period: keep Starter access until this UTC datetime even after cancellation
-    plan_expires_at = Column(DateTime, nullable=True)
-    ls_customer_id = Column(String(255), nullable=True)
-    ls_subscription_id = Column(String(255), nullable=True)
-    ls_variant_id = Column(String(255), nullable=True)
     team_type   = Column(String(50), nullable=True)
     hourly_rate = Column(Float, nullable=True)
     # currency kept for backward compatibility; per-member currency now lives on TeamMember
@@ -237,7 +237,7 @@ class Subscription(Base):
     __tablename__ = "subscriptions"
 
     id                   = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    team_id              = Column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False, index=True)
+    user_id              = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     ls_subscription_id   = Column(String(255), nullable=False, index=True)
     ls_customer_id       = Column(String(255), nullable=True)
     ls_variant_id        = Column(String(255), nullable=True)
@@ -258,7 +258,7 @@ class WebhookEvent(Base):
     # LS sends a unique event ID in meta.event_id — use it as idempotency key
     event_id   = Column(String(255), unique=True, nullable=False, index=True)
     event_name = Column(String(100), nullable=False)
-    team_id    = Column(String(255), nullable=True)
+    user_id    = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     payload    = Column(Text, nullable=False)   # raw JSON body
     created_at = Column(DateTime, default=datetime.utcnow)
 

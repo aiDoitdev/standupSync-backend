@@ -5,16 +5,16 @@ from app.core.config import get_settings
 
 _settings = get_settings()
 
-# Supabase PgBouncer (transaction mode) rejects prepared statements —
-# disable the asyncpg internal cache and force unnamed execution.
-# json_serializer/deserializer=None prevents the asyncpg dialect from running
-# a prepared-statement codec introspection on each new connection.
+# Supabase Supavisor (transaction-pooling mode) does not support named prepared
+# statements. statement_cache_size=0 disables asyncpg's internal cache so all
+# statements — including type-codec introspection — use unnamed (ephemeral) form.
 engine = create_async_engine(
     _settings.database_url_async,
     echo=False,
     connect_args={
         "prepared_statement_cache_size": 0,
         "prepared_statement_name_func": lambda: "",
+        "statement_cache_size": 0,
     },
     pool_pre_ping=True,
     pool_size=10,

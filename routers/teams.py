@@ -49,7 +49,7 @@ async def create_team(
     user_teams = existing_teams.scalars().all()
 
     if user_teams:
-        has_starter = any(team_has_starter_access(t) for t in user_teams)
+        has_starter = team_has_starter_access(current_user)
         if not has_starter:
             raise HTTPException(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
@@ -80,7 +80,7 @@ async def create_team(
     return TeamResponse(
         id=str(team.id),
         name=team.name,
-        plan=team.plan,
+        plan=current_user.plan,
         member_count=0,
     )
 
@@ -110,8 +110,8 @@ async def get_all_teams(
                     name=team.name,
                     user_role="owner",
                     member_count=member_count,
-                    plan=team.plan or "free",
-                    plan_status=team.plan_status or "active",
+                    plan=current_user.plan or "free",
+                    plan_status=current_user.plan_status or "active",
                     created_at=team.created_at,
                     team_type=team.team_type,
                 )
@@ -136,14 +136,17 @@ async def get_all_teams(
         )
         member_count = count_result.scalar() or 0
 
+        mgr_result = await db.execute(select(User).where(User.id == team.manager_id))
+        mgr = mgr_result.scalar_one_or_none()
+
         teams_list.append(
             UserTeamsResponse(
                 id=str(team.id),
                 name=team.name,
                 user_role="member",
                 member_count=member_count,
-                plan=team.plan or "free",
-                plan_status=team.plan_status or "active",
+                plan=mgr.plan if mgr else "free",
+                plan_status=mgr.plan_status if mgr else "active",
                 created_at=team.created_at,
                 team_type=team.team_type,
             )
@@ -182,7 +185,7 @@ async def get_my_team(
     return TeamResponse(
         id=str(team.id),
         name=team.name,
-        plan=team.plan,
+        plan=current_user.plan,
         member_count=member_count,
     )
 
@@ -287,10 +290,13 @@ async def get_team_details(
     )
     member_count = count_result.scalar() or 0
 
+    mgr_result = await db.execute(select(User).where(User.id == team.manager_id))
+    mgr = mgr_result.scalar_one_or_none()
+
     return TeamDetailResponse(
         id=str(team.id),
         name=team.name,
-        plan=team.plan,
+        plan=mgr.plan if mgr else "free",
         member_count=member_count,
         created_at=team.created_at,
         team_type=team.team_type,
@@ -321,7 +327,7 @@ async def update_team(
     return TeamDetailResponse(
         id=str(team.id),
         name=team.name,
-        plan=team.plan,
+        plan=current_user.plan,
         member_count=member_count,
         created_at=team.created_at,
         team_type=team.team_type,
@@ -366,7 +372,7 @@ async def add_question(
 ):
     """Add a new question to the team. Manager only. Requires Starter plan."""
     team, _ = await require_team_manager(team_id, current_user, db)
-    require_starter(team, "Custom standup questions")
+    require_starter(current_user, "Custom standup questions")
 
     # Determine next order_index
     max_result = await db.execute(
@@ -480,7 +486,7 @@ async def invite_members(
     team, _ = await require_team_manager(team_id, current_user, db)
 
     # Enforce free-plan member limit
-    if not team_has_starter_access(team):
+    if not team_has_starter_access(current_user):
         count_result = await db.execute(
             select(func.count(TeamMember.id)).where(TeamMember.team_id == team.id)
         )
@@ -834,7 +840,7 @@ async def invite_members_legacy_post(
     return TeamResponse(
         id=str(team.id),
         name=team.name,
-        plan=team.plan,
+        plan=current_user.plan,
         member_count=member_count,
     )
 
