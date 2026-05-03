@@ -13,6 +13,7 @@ logger = structlog.get_logger(__name__)
 
 async def run_due_ai_task_radar() -> None:
     now_utc = datetime.now(timezone.utc)
+    now_naive = now_utc.replace(tzinfo=None)
 
     async with AsyncSessionLocal() as db:
         due_schedules = (await db.execute(
@@ -20,7 +21,7 @@ async def run_due_ai_task_radar() -> None:
                 and_(
                     AutomationSchedule.enabled == True,  # noqa: E712
                     AutomationSchedule.next_run_at.isnot(None),
-                    AutomationSchedule.next_run_at <= now_utc,
+                    AutomationSchedule.next_run_at <= now_naive,
                 )
             )
         )).scalars().all()
