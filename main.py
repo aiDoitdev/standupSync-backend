@@ -78,16 +78,19 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
 
 
-app.include_router(auth.router,          prefix="/auth",         tags=["auth"])
-app.include_router(teams.router,         prefix="/teams",        tags=["teams"])
-app.include_router(checkin.router,       prefix="/checkin",      tags=["checkin"])
-app.include_router(invite.router,        prefix="/invite",       tags=["invite"])
-app.include_router(waitlist.router,      prefix="/waitlist",     tags=["waitlist"])
-app.include_router(blockers.router,      prefix="/blockers",     tags=["blockers"])
-app.include_router(billing.router,       prefix="/billing",      tags=["billing"])
-app.include_router(reports.router,       prefix="/reports",      tags=["reports"])
-app.include_router(automation.router,    prefix="/automation",   tags=["automation"])
-app.include_router(ai_task_radar.router, prefix="/ai-task-radar", tags=["ai-task-radar"])
+from fastapi import APIRouter as _APIRouter
+_v1 = _APIRouter(prefix="/v1")
+_v1.include_router(auth.router,          prefix="/auth",         tags=["auth"])
+_v1.include_router(teams.router,         prefix="/teams",        tags=["teams"])
+_v1.include_router(checkin.router,       prefix="/checkin",      tags=["checkin"])
+_v1.include_router(invite.router,        prefix="/invite",       tags=["invite"])
+_v1.include_router(waitlist.router,      prefix="/waitlist",     tags=["waitlist"])
+_v1.include_router(blockers.router,      prefix="/blockers",     tags=["blockers"])
+_v1.include_router(billing.router,       prefix="/billing",      tags=["billing"])
+_v1.include_router(reports.router,       prefix="/reports",      tags=["reports"])
+_v1.include_router(automation.router,    prefix="/automation",   tags=["automation"])
+_v1.include_router(ai_task_radar.router, prefix="/ai-task-radar", tags=["ai-task-radar"])
+app.include_router(_v1)
 
 
 @app.get("/")
