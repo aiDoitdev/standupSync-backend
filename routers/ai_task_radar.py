@@ -90,7 +90,7 @@ def _analysis_to_summary(a: AutomationAnalysis) -> AiTaskRadarAnalysisSummary:
         is_empty=bool(a.is_empty),
         summary_text=a.summary_text,
         error_message=a.error_message,
-        created_at=a.created_at,
+        created_at=a.created_at or datetime.now(timezone.utc),
     )
 
 

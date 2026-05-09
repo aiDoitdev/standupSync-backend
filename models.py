@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timedelta
-from sqlalchemy import Column, String, Boolean, DateTime, Date, Text, ForeignKey, Float, Integer
+from sqlalchemy import Column, String, Boolean, DateTime, Date, Text, ForeignKey, Float, Integer, func
 from sqlalchemy.dialects.postgresql import UUID
 from database import Base
 
@@ -191,7 +191,7 @@ class AutomationAnalysis(Base):
     task_count        = Column(Integer, nullable=True)
     is_empty          = Column(Boolean, nullable=False, default=False)
     llm_response_json = Column(Text, nullable=True)   # raw JSON blob returned by the LLM; avoids re-calling on repeat fetches
-    created_at        = Column(DateTime, default=datetime.utcnow)
+    created_at        = Column(DateTime, nullable=False, default=datetime.utcnow, server_default=func.now())
 
 
 class AutomationSchedule(Base):
