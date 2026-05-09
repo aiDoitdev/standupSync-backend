@@ -59,7 +59,6 @@ async def create_team(
     team = Team(
         name=data.name,
         manager_id=current_user.id,
-        plan="free",
         team_type=data.team_type,
     )
     db.add(team)
@@ -485,23 +484,30 @@ async def invite_members(
     """Invite members to a team. Manager only."""
     team, _ = await require_team_manager(team_id, current_user, db)
 
-    # Enforce free-plan member limit
+    # Enforce free-plan member limit (active members + pending invites)
     if not team_has_starter_access(current_user):
         count_result = await db.execute(
             select(func.count(TeamMember.id)).where(TeamMember.team_id == team.id)
         )
-        current_count = count_result.scalar() or 0
-        if current_count + len(data.emails) > FREE_MEMBER_LIMIT:
+        member_count = count_result.scalar() or 0
+        pending_result = await db.execute(
+            select(func.count(Invite.id)).where(
+                and_(Invite.team_id == team.id, Invite.used == False)
+            )
+        )
+        pending_count = pending_result.scalar() or 0
+        total = member_count + pending_count
+        if total + len(data.emails) > FREE_MEMBER_LIMIT:
             raise HTTPException(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
                 detail={
                     "message": (
-                        f"Free plan allows a maximum of {FREE_MEMBER_LIMIT} members. "
-                        f"You have {current_count} and are trying to add {len(data.emails)}. "
+                        f"Free plan allows {FREE_MEMBER_LIMIT} invited member per team. "
+                        f"You currently have {total}. "
                         "Upgrade to Starter ($19/mo) for unlimited members and teams."
                     ),
                     "upgrade_required": True,
-                    "current_count": current_count,
+                    "current_count": total,
                     "limit": FREE_MEMBER_LIMIT,
                 },
             )

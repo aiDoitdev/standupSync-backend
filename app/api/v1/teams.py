@@ -196,17 +196,23 @@ async def delete_question(team_id: str, question_id: str, current_user: User = D
 @router.post("/{team_id}/invite", status_code=status.HTTP_200_OK)
 async def invite_members(team_id: str, data: InviteMembersRequest, current_user: User = Depends(require_manager), db: AsyncSession = Depends(get_db)):
     team, _ = await require_team_manager(team_id, current_user, db)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     if not user_has_starter_access(current_user):
-        current_count = (await db.execute(select(func.count(TeamMember.id)).where(TeamMember.team_id == team.id))).scalar() or 0
-        if current_count + len(data.emails) > FREE_MEMBER_LIMIT:
+        member_count = (await db.execute(select(func.count(TeamMember.id)).where(TeamMember.team_id == team.id))).scalar() or 0
+        pending_count = (await db.execute(select(func.count(Invite.id)).where(and_(Invite.team_id == team.id, Invite.used == False, Invite.expires_at > now)))).scalar() or 0
+        total = member_count + pending_count
+        if total + len(data.emails) > FREE_MEMBER_LIMIT:
             raise HTTPException(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail={"message": f"Free plan allows {FREE_MEMBER_LIMIT} invited member per team. You have {current_count}.", "upgrade_required": True, "current_count": current_count, "limit": FREE_MEMBER_LIMIT},
+                detail={"message": f"Free plan allows {FREE_MEMBER_LIMIT} invited member per team. You currently have {total}.", "upgrade_required": True, "current_count": total, "limit": FREE_MEMBER_LIMIT},
             )
 
     sent, failed, skipped = 0, [], []
     for email in data.emails:
-        existing_invite = (await db.execute(select(Invite).where(and_(Invite.team_id == team.id, Invite.email == email, Invite.used == False)))).scalar_one_or_none()
+        if email.lower() == current_user.email.lower():
+            skipped.append({"email": email, "reason": "cannot invite yourself"})
+            continue
+        existing_invite = (await db.execute(select(Invite).where(and_(Invite.team_id == team.id, Invite.email == email, Invite.used == False, Invite.expires_at > now)))).scalar_one_or_none()
         if existing_invite:
             skipped.append({"email": email, "reason": "pending invite already exists"})
             continue

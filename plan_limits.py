@@ -11,7 +11,7 @@ from models import User
 
 # ── Free plan hard limits ────────────────────────────────────────────────────
 FREE_TEAM_LIMIT = 1
-FREE_MEMBER_LIMIT = 5
+FREE_MEMBER_LIMIT = 1
 
 # ── Starter plan limits (effectively unlimited) ──────────────────────────────
 STARTER_MEMBER_LIMIT = None   # unlimited
