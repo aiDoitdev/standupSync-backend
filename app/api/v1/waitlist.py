@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
+from app.core.types import LenientEmailStr
 
 from app.core.database import get_db
 from app.models.team import WaitlistEntry
@@ -10,7 +11,7 @@ router = APIRouter()
 
 
 class WaitlistJoinRequest(BaseModel):
-    email: EmailStr
+    email: LenientEmailStr
 
 
 class WaitlistJoinResponse(BaseModel):

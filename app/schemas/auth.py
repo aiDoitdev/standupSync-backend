@@ -1,10 +1,11 @@
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, field_validator
+from app.core.types import LenientEmailStr
 
 
 class SendOTPRequest(BaseModel):
-    email: EmailStr
+    email: LenientEmailStr
     name: str
     password: str
 
@@ -17,7 +18,7 @@ class SendOTPRequest(BaseModel):
 
 
 class VerifySignupRequest(BaseModel):
-    email: EmailStr
+    email: LenientEmailStr
     name: str
     password: str
     otp_code: str
@@ -31,7 +32,7 @@ class VerifySignupRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    email: LenientEmailStr
     password: str
 
 

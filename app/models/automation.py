@@ -31,7 +31,7 @@ class AutomationAnalysis(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         UniqueConstraint("team_id", "period_start", name="uq_automation_analyses_team_period"),
         CheckConstraint("status IN ('completed', 'failed')", name="ck_automation_analyses_status"),
         CheckConstraint(
-            "trigger IN ('scheduled', 'manual_admin', 'initial')",
+            "trigger IN ('scheduled', 'manual_admin', 'initial', 'manual')",
             name="ck_automation_analyses_trigger",
         ),
         Index("ix_automation_analyses_team_id", "team_id"),

@@ -1,7 +1,7 @@
 """
 LLM service for AI Automation Radar.
 
-Provider-agnostic: reads LLM_PROVIDER env var (openai | anthropic | mock).
+Provider-agnostic: reads LLM_PROVIDER env var (openai | anthropic | gemini | mock).
 Falls back to mock when LLM_PROVIDER is unset — no external calls, no crashes.
 
 Public API:
@@ -23,6 +23,7 @@ _PROVIDER = os.getenv("LLM_PROVIDER", "mock").lower().strip()
 _API_KEY = os.getenv("LLM_API_KEY", "")
 _MODEL_OPENAI = os.getenv("LLM_MODEL", "gpt-4o-mini")
 _MODEL_ANTHROPIC = os.getenv("LLM_MODEL", "claude-3-haiku-20240307")
+_MODEL_GEMINI = os.getenv("LLM_MODEL", "gemini-2.0-flash")
 
 _LLM_TIMEOUT = 60.0  # seconds — LLM responses can be slow
 
@@ -170,6 +171,32 @@ async def _call_anthropic(system_prompt: str, user_prompt: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Provider: Gemini
+# ---------------------------------------------------------------------------
+
+async def _call_gemini(system_prompt: str, user_prompt: str) -> dict:
+    if not _API_KEY:
+        raise ValueError("LLM_API_KEY is not set — cannot call Gemini")
+
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{_MODEL_GEMINI}:generateContent?key={_API_KEY}"
+    )
+    payload = {
+        "system_instruction": {"parts": [{"text": system_prompt}]},
+        "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+        "generationConfig": {"temperature": 0.3, "responseMimeType": "application/json"},
+    }
+    async with httpx.AsyncClient(timeout=_LLM_TIMEOUT) as client:
+        resp = await client.post(url, headers={"Content-Type": "application/json"}, json=payload)
+    if resp.status_code != 200:
+        raise ValueError(f"Gemini API error {resp.status_code}: {resp.text[:300]}")
+
+    raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+    return _parse_and_validate(raw)
+
+
+# ---------------------------------------------------------------------------
 # Provider: Mock (default when LLM_PROVIDER is unset)
 # ---------------------------------------------------------------------------
 
@@ -239,10 +266,12 @@ async def generate_automation_insights(
         return await _call_openai(system_prompt, user_prompt)
     elif provider == "anthropic":
         return await _call_anthropic(system_prompt, user_prompt)
+    elif provider == "gemini":
+        return await _call_gemini(system_prompt, user_prompt)
     else:
         raise ValueError(
             f"Unknown LLM_PROVIDER='{provider}'. "
-            "Valid values: openai, anthropic, mock"
+            "Valid values: openai, anthropic, gemini, mock"
         )
 
 
@@ -418,6 +447,28 @@ async def _call_anthropic_radar(system_prompt: str, user_prompt: str) -> dict:
     return _parse_and_validate_radar(raw)
 
 
+async def _call_gemini_radar(system_prompt: str, user_prompt: str) -> dict:
+    if not _API_KEY:
+        raise ValueError("LLM_API_KEY is not set — cannot call Gemini")
+
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{_MODEL_GEMINI}:generateContent?key={_API_KEY}"
+    )
+    payload = {
+        "system_instruction": {"parts": [{"text": system_prompt}]},
+        "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+        "generationConfig": {"temperature": 0.3, "responseMimeType": "application/json"},
+    }
+    async with httpx.AsyncClient(timeout=_LLM_TIMEOUT) as client:
+        resp = await client.post(url, headers={"Content-Type": "application/json"}, json=payload)
+    if resp.status_code != 200:
+        raise ValueError(f"Gemini API error {resp.status_code}: {resp.text[:300]}")
+
+    raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+    return _parse_and_validate_radar(raw)
+
+
 def _mock_radar_response(team_name: str, members_payload: list[dict], window_days: int) -> dict:
     members_out = []
     for idx, m in enumerate(members_payload):
@@ -499,7 +550,9 @@ async def generate_ai_task_radar(
         return await _call_openai_radar(system_prompt, user_prompt)
     elif provider == "anthropic":
         return await _call_anthropic_radar(system_prompt, user_prompt)
+    elif provider == "gemini":
+        return await _call_gemini_radar(system_prompt, user_prompt)
     else:
         raise ValueError(
-            f"Unknown LLM_PROVIDER='{provider}'. Valid values: openai, anthropic, mock"
+            f"Unknown LLM_PROVIDER='{provider}'. Valid values: openai, anthropic, gemini, mock"
         )

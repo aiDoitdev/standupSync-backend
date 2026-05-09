@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import List, Optional
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
+from app.core.types import LenientEmailStr
 
 
 class CreateTeamRequest(BaseModel):
@@ -36,7 +37,7 @@ class UserTeamsResponse(BaseModel):
 
 
 class InviteMembersRequest(BaseModel):
-    emails: List[EmailStr]
+    emails: List[LenientEmailStr]
 
 
 class MemberStatusResponse(BaseModel):

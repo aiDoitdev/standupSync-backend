@@ -1,6 +1,24 @@
-from pydantic import BaseModel, EmailStr, field_validator
-from typing import Optional, List, Literal
+from pydantic import BaseModel, BeforeValidator, field_validator
+from typing import Annotated, Any, Optional, List, Literal
 from datetime import datetime, date
+import re
+
+from email_validator import validate_email, EmailNotValidError
+
+
+def _validate_email_lenient(v: Any) -> str:
+    if not isinstance(v, str):
+        raise ValueError("string required")
+    try:
+        return validate_email(v, check_deliverability=False).normalized
+    except EmailNotValidError:
+        # Allow reserved/special-use TLDs (e.g. .test, .localhost) in dev environments
+        if re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", v):
+            return v.lower()
+        raise ValueError(f"value is not a valid email address: {v}")
+
+
+LenientEmailStr = Annotated[str, BeforeValidator(_validate_email_lenient)]
 
 
 # ---------------------------------------------------------------------------
@@ -8,26 +26,26 @@ from datetime import datetime, date
 # ---------------------------------------------------------------------------
 
 class SignupRequest(BaseModel):
-    email: EmailStr
+    email: LenientEmailStr
     name: str
     password: str
 
 
 class SendOTPRequest(BaseModel):
-    email: EmailStr
+    email: LenientEmailStr
     name: str
     password: str
 
 
 class VerifySignupRequest(BaseModel):
-    email: EmailStr
+    email: LenientEmailStr
     name: str
     password: str
     otp_code: str
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    email: LenientEmailStr
     password: str
 
 
@@ -64,7 +82,7 @@ class TeamResponse(BaseModel):
 
 
 class InviteMembersRequest(BaseModel):
-    emails: List[EmailStr]
+    emails: List[LenientEmailStr]
 
 
 class MemberStatusResponse(BaseModel):
@@ -477,6 +495,10 @@ class AiTaskRadarAdminRunRequest(BaseModel):
     """Dev/admin backdoor — only honoured when AI_TASK_RADAR_ADMIN_RUN=1 on the server."""
     window_days: Literal[7, 14, 30] = 7
     trigger: Literal["manual_admin", "initial"] = "manual_admin"
+
+
+class AiTaskRadarRunRequest(BaseModel):
+    window_days: Literal[7, 14, 30] = 7
 
 
 class AutomationIntegrationProvider(BaseModel):

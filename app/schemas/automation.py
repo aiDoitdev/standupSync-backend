@@ -143,6 +143,10 @@ class AiTaskRadarAdminRunRequest(BaseModel):
     trigger: Literal["manual_admin", "initial"] = "manual_admin"
 
 
+class AiTaskRadarRunRequest(BaseModel):
+    window_days: Literal[7, 14, 30] = 7
+
+
 class AutomationIntegrationProvider(BaseModel):
     provider: Literal["jira", "linear", "notion", "sheets"]
     status: str

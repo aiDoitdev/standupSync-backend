@@ -3,13 +3,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from database import get_db
 from models import WaitlistEntry
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
+from schemas import LenientEmailStr
 
 router = APIRouter()
 
 
 class WaitlistJoinRequest(BaseModel):
-    email: EmailStr
+    email: LenientEmailStr
 
 
 class WaitlistJoinResponse(BaseModel):

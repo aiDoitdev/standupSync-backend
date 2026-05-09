@@ -1,21 +1,27 @@
 """
 Remove ALL seeded test data from StandupSync database.
 
-Handles both seed scripts:
-  - seed_test_data.py       → [TEST] Test Team Alpha  + testmember{1,2,3}@test.com
-  - seed_large_test_data.py → all [TEST] * teams       + *@testcorp.com members
+Handles all seed scripts:
+  - seed_test_data.py          → [TEST] Test Team Alpha  + testmember{1,2,3}@test.com
+  - seed_large_test_data.py    → all [TEST] * teams       + *@testcorp.com members
+  - seed_complete_test_data.py → [TEST] Alpha Engineering Team + *@standupsync.test
 
 Deletion order (respects FK constraints):
-  1. AutomationAnalyses  — for each [TEST] team
-  2. CheckinAnswers      — for all check-ins in [TEST] teams
-  3. Checkins            — for all [TEST] teams
-  4. Blockers            — for all [TEST] teams
-  5. TeamQuestions       — for all [TEST] teams
-  6. TeamMembers         — for all [TEST] teams
-  7. Teams               — all [TEST] * teams
-  8. @testcorp.com users — all large-seed member accounts
-  9. Small-seed users    — testmember{1,2,3}@test.com
-  10. Manager            — testmanager@test.com (only if no other teams remain)
+  1. AutomationSchedule       — for each [TEST] team
+  2. AutomationIntegration    — for each [TEST] team
+  3. AutomationAnalysis       — for each [TEST] team
+  4. BlockerResolutions        — for all blockers in [TEST] teams
+  5. BlockerComments           — for all blockers in [TEST] teams
+  6. Blockers                  — for all [TEST] teams
+  7. CheckinAnswers            — for all check-ins in [TEST] teams
+  8. Checkins                  — for all [TEST] teams
+  9. TeamQuestions             — for all [TEST] teams
+  10. TeamMembers              — for all [TEST] teams
+  11. Teams                   — all [TEST] * teams
+  12. @standupsync.test users  — all complete-seed accounts
+  13. @testcorp.com users      — all large-seed member accounts
+  14. Small-seed users         — testmember{1,2,3}@test.com
+  15. Manager                  — testmanager@test.com (only if no other teams remain)
 
 Run:
   python3 remove_test_data.py
@@ -36,21 +42,24 @@ from models import (
     Checkin,
     CheckinAnswer,
     Blocker,
+    BlockerComment,
+    BlockerResolution,
     AutomationAnalysis,
     AutomationSchedule,
     AutomationIntegration,
 )
 
-# ─── Test data identifiers (cover both seed scripts) ─────────────────────────
+# ─── Test data identifiers (cover all seed scripts) ──────────────────────────
 
-MANAGER_EMAIL       = "testmanager@test.com"
-SMALL_SEED_EMAILS   = [
+MANAGER_EMAIL        = "testmanager@test.com"
+SMALL_SEED_EMAILS    = [
     "testmember1@test.com",
     "testmember2@test.com",
     "testmember3@test.com",
 ]
-TEST_TEAM_PREFIX    = "[TEST]"           # all teams starting with this are test data
-TESTCORP_DOMAIN     = "@testcorp.com"   # all large-seed member accounts
+TEST_TEAM_PREFIX     = "[TEST]"           # all teams starting with this are test data
+TESTCORP_DOMAIN      = "@testcorp.com"   # all large-seed member accounts
+STANDUPSYNC_DOMAIN   = "@standupsync.test"  # all complete-seed accounts
 
 # ─── DB engine (PgBouncer-compatible) ────────────────────────────────────────
 
@@ -60,6 +69,7 @@ _engine = create_async_engine(
     connect_args={
         "prepared_statement_cache_size": 0,
         "prepared_statement_name_func": lambda: "",
+        "statement_cache_size": 0,
     },
 )
 _Session = sessionmaker(_engine, class_=AsyncSession, expire_on_commit=False)
@@ -99,6 +109,42 @@ async def _delete_team(team: Team, session: AsyncSession, counts: dict) -> None:
     counts["automation_analyses"] = counts.get("automation_analyses", 0) + len(rows)
     await session.flush()
 
+    # Blockers (must delete comments + resolutions first)
+    blk_result = await session.execute(
+        select(Blocker).where(Blocker.team_id == team_id)
+    )
+    blockers = blk_result.scalars().all()
+
+    res_count = 0
+    cmt_count = 0
+    for b in blockers:
+        # BlockerResolutions
+        res_result = await session.execute(
+            select(BlockerResolution).where(BlockerResolution.blocker_id == b.id)
+        )
+        resolutions = res_result.scalars().all()
+        for r in resolutions:
+            await session.delete(r)
+        res_count += len(resolutions)
+
+        # BlockerComments
+        cmt_result = await session.execute(
+            select(BlockerComment).where(BlockerComment.blocker_id == b.id)
+        )
+        comments = cmt_result.scalars().all()
+        for c in comments:
+            await session.delete(c)
+        cmt_count += len(comments)
+
+    await session.flush()
+    counts["blocker_resolutions"] = counts.get("blocker_resolutions", 0) + res_count
+    counts["blocker_comments"] = counts.get("blocker_comments", 0) + cmt_count
+
+    for b in blockers:
+        await session.delete(b)
+    counts["blockers"] = counts.get("blockers", 0) + len(blockers)
+    await session.flush()
+
     # CheckinAnswers (via Checkins)
     checkin_result = await session.execute(
         select(Checkin).where(Checkin.team_id == team_id)
@@ -120,16 +166,6 @@ async def _delete_team(team: Team, session: AsyncSession, counts: dict) -> None:
     for c in checkins:
         await session.delete(c)
     counts["checkins"] = counts.get("checkins", 0) + len(checkins)
-    await session.flush()
-
-    # Blockers
-    blk_result = await session.execute(
-        select(Blocker).where(Blocker.team_id == team_id)
-    )
-    blockers = blk_result.scalars().all()
-    for b in blockers:
-        await session.delete(b)
-    counts["blockers"] = counts.get("blockers", 0) + len(blockers)
     await session.flush()
 
     # TeamQuestions
@@ -162,30 +198,49 @@ async def main() -> None:
     async with _Session() as session:
         async with session.begin():
 
-            # ── Find ALL [TEST] teams ──────────────────────────────────────────
+            counts: dict[str, int] = {}
+
+            # ── Find ALL test teams ────────────────────────────────────────────
+            # Match teams by [TEST] name prefix OR teams owned by a test-domain manager
+            all_users_result = await session.execute(select(User))
+            all_users_init = all_users_result.scalars().all()
+            test_manager_ids = {
+                u.id for u in all_users_init
+                if u.email.endswith(STANDUPSYNC_DOMAIN) and u.role == "manager"
+            }
+
             all_teams_result = await session.execute(select(Team))
             all_teams = all_teams_result.scalars().all()
-            test_teams = [t for t in all_teams if t.name.startswith(TEST_TEAM_PREFIX)]
+            test_teams = [
+                t for t in all_teams
+                if t.name.startswith(TEST_TEAM_PREFIX) or t.manager_id in test_manager_ids
+            ]
 
             if not test_teams:
-                print("ℹ️  No [TEST] teams found in the database. Nothing to remove.")
-                return
-
-            print(f"\nFound {len(test_teams)} [TEST] team(s) to remove:")
-            for t in test_teams:
-                print(f"  • {t.name}")
-            print()
-
-            counts: dict[str, int] = {}
+                print("ℹ️  No test teams found in the database.")
+            else:
+                print(f"\nFound {len(test_teams)} test team(s) to remove:")
+                for t in test_teams:
+                    print(f"  • {t.name}")
+                print()
 
             # ── Delete each test team and its data ────────────────────────────
             for team in test_teams:
                 await _delete_team(team, session, counts)
 
-            # ── Delete @testcorp.com member accounts (large seed) ─────────────
+            # ── Delete @standupsync.test accounts (complete seed) ─────────────
             all_users_result = await session.execute(select(User))
             all_users = all_users_result.scalars().all()
-            testcorp_users = [u for u in all_users if u.email.endswith(TESTCORP_DOMAIN)]
+            standupsync_users = [u for u in all_users if u.email.endswith(STANDUPSYNC_DOMAIN)]
+            for u in standupsync_users:
+                await session.delete(u)
+            counts["standupsync_users"] = len(standupsync_users)
+            await session.flush()
+
+            # ── Delete @testcorp.com member accounts (large seed) ─────────────
+            all_users_result2 = await session.execute(select(User))
+            all_users2 = all_users_result2.scalars().all()
+            testcorp_users = [u for u in all_users2 if u.email.endswith(TESTCORP_DOMAIN)]
             for u in testcorp_users:
                 await session.delete(u)
             counts["testcorp_users"] = len(testcorp_users)
@@ -224,12 +279,15 @@ async def main() -> None:
         "teams":                   "teams deleted",
         "team_members":            "team_member rows deleted",
         "team_questions":          "team_question rows deleted",
+        "blocker_resolutions":     "blocker_resolution rows deleted",
+        "blocker_comments":        "blocker_comment rows deleted",
+        "blockers":                "blocker rows deleted",
         "checkin_answers":         "checkin_answer rows deleted",
         "checkins":                "checkin rows deleted",
-        "blockers":                "blocker rows deleted",
         "automation_schedules":    "automation_schedule rows deleted",
         "automation_integrations": "automation_integration rows deleted",
         "automation_analyses":     "automation_analysis rows deleted",
+        "standupsync_users":       "@standupsync.test user accounts deleted",
         "testcorp_users":          "@testcorp.com user accounts deleted",
         "small_seed_users":        "testmember@test.com accounts deleted",
         "manager_deleted":         "manager account deleted",
@@ -239,7 +297,7 @@ async def main() -> None:
         if n:
             print(f"  {n:>6}  {label}")
     print()
-    print("  Run `python3 seed_test_data.py` or `python3 seed_large_test_data.py` to reseed.")
+    print("  Run `python3 seed_complete_test_data.py` to reseed.")
     print()
 
     await _engine.dispose()
@@ -247,4 +305,3 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-

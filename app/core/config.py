@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     lemonsqueezy_starter_variant_id: str = ""
 
     # ── LLM ───────────────────────────────────────────────────────────────────
-    llm_provider: Literal["openai", "anthropic", "mock"] = "mock"
+    llm_provider: Literal["openai", "anthropic", "gemini", "mock"] = "mock"
     llm_api_key: str = ""
     llm_model: str = ""
 

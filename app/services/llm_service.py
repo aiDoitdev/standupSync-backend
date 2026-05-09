@@ -14,7 +14,12 @@ logger = structlog.get_logger(__name__)
 _settings = get_settings()
 _PROVIDER = _settings.llm_provider
 _API_KEY = _settings.llm_api_key
-_MODEL = _settings.llm_model or ("gpt-4o-mini" if _PROVIDER == "openai" else "claude-3-haiku-20240307")
+_DEFAULT_MODELS = {
+    "openai": "gpt-4o-mini",
+    "anthropic": "claude-3-haiku-20240307",
+    "gemini": "gemini-1.5-flash",
+}
+_MODEL = _settings.llm_model or _DEFAULT_MODELS.get(_PROVIDER, "gemini-1.5-flash")
 _LLM_TIMEOUT = 60.0
 
 
@@ -186,6 +191,29 @@ async def _call_anthropic(system: str, user: str, *, radar: bool = False) -> dic
     return _parse_radar(raw) if radar else _parse_findings(raw)
 
 
+async def _call_gemini(system: str, user: str, *, radar: bool = False) -> dict:
+    if not _API_KEY:
+        raise ValueError("LLM_API_KEY is not set — cannot call Gemini")
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/{_MODEL}"
+        f":generateContent?key={_API_KEY}"
+    )
+    payload = {
+        "system_instruction": {"parts": [{"text": system}]},
+        "contents": [{"role": "user", "parts": [{"text": user}]}],
+        "generationConfig": {
+            "response_mime_type": "application/json",
+            "temperature": 0.3,
+        },
+    }
+    async with httpx.AsyncClient(timeout=_LLM_TIMEOUT) as client:
+        resp = await client.post(url, json=payload)
+    if resp.status_code != 200:
+        raise ValueError(f"Gemini API error {resp.status_code}: {resp.text[:300]}")
+    raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+    return _parse_radar(raw) if radar else _parse_findings(raw)
+
+
 # ── Mock responses ────────────────────────────────────────────────────────────
 
 def _mock_findings(window_days: int) -> dict:
@@ -258,6 +286,8 @@ async def generate_automation_insights(
         return await _call_openai(system, user)
     elif _PROVIDER == "anthropic":
         return await _call_anthropic(system, user)
+    elif _PROVIDER == "gemini":
+        return await _call_gemini(system, user)
     raise ValueError(f"Unknown LLM_PROVIDER='{_PROVIDER}'")
 
 
@@ -275,4 +305,6 @@ async def generate_ai_task_radar(
         return await _call_openai(system, user, radar=True)
     elif _PROVIDER == "anthropic":
         return await _call_anthropic(system, user, radar=True)
+    elif _PROVIDER == "gemini":
+        return await _call_gemini(system, user, radar=True)
     raise ValueError(f"Unknown LLM_PROVIDER='{_PROVIDER}'")

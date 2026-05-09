@@ -8,6 +8,7 @@ Endpoints (all require the team's manager; Starter plan only):
   GET   /ai-task-radar/{team_id}/history                      — grouped-by-month on the client
   GET   /ai-task-radar/{team_id}/analyses/{analysis_id}       — full team/member/task detail
   GET   /ai-task-radar/{team_id}/analyses/{analysis_id}/members/{member_key}
+  POST  /ai-task-radar/{team_id}/run                          — manual trigger (manager, Starter plan)
   POST  /ai-task-radar/{team_id}/admin/run                    — dev backdoor (env-gated)
   GET   /ai-task-radar/{team_id}/integrations                 — stub list (jira/linear/notion)
 """
@@ -38,6 +39,7 @@ from app.schemas import (
     AiTaskRadarAnalysisSummary,
     AiTaskRadarMember,
     AiTaskRadarMemberDetail,
+    AiTaskRadarRunRequest,
     AiTaskSuggestionTool,
     AutomationIntegrationProvider,
     AutomationScheduleRequest,
@@ -373,6 +375,43 @@ async def get_member_detail(
         member_score=member_score,
         tasks=[_task_to_schema(t) for t in tasks],
     )
+
+
+# ---------------------------------------------------------------------------
+# Manual trigger — available to any manager on Starter plan
+# ---------------------------------------------------------------------------
+
+_CADENCE_WINDOW: dict[str, int] = {"weekly": 7, "biweekly": 14, "monthly": 30}
+
+
+@router.post("/{team_id}/run", response_model=AiTaskRadarAnalysisSummary, status_code=status.HTTP_201_CREATED)
+async def run_analysis_now(
+    team_id: str,
+    data: AiTaskRadarRunRequest,
+    current_user: User = Depends(require_manager),
+    db: AsyncSession = Depends(get_db),
+):
+    """Trigger an immediate AI Task Radar run outside the schedule."""
+    team, _ = await require_team_manager(team_id, current_user, db)
+    _require_starter(current_user)
+
+    # Derive window_days from the team's configured cadence when not explicitly provided.
+    window_days = data.window_days
+    if window_days == 7:
+        schedule_row = await db.scalar(
+            select(AutomationSchedule).where(AutomationSchedule.team_id == team.id)
+        )
+        if schedule_row:
+            window_days = _CADENCE_WINDOW.get(schedule_row.cadence, 7)
+
+    record = await run_team_analysis(
+        db,
+        team,
+        window_days=window_days,
+        trigger="manual",
+        created_by_user_id=current_user.id,
+    )
+    return _analysis_to_summary(record)
 
 
 # ---------------------------------------------------------------------------
