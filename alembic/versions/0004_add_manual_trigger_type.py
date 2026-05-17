@@ -13,7 +13,9 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.drop_constraint("ck_automation_analyses_trigger", "automation_analyses")
+    # IF EXISTS — some environments provisioned automation_analyses via
+    # Base.metadata.create_all() which never materialized this CHECK constraint.
+    op.execute("ALTER TABLE automation_analyses DROP CONSTRAINT IF EXISTS ck_automation_analyses_trigger")
     op.create_check_constraint(
         "ck_automation_analyses_trigger",
         "automation_analyses",
@@ -22,7 +24,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_constraint("ck_automation_analyses_trigger", "automation_analyses")
+    op.execute("ALTER TABLE automation_analyses DROP CONSTRAINT IF EXISTS ck_automation_analyses_trigger")
     op.create_check_constraint(
         "ck_automation_analyses_trigger",
         "automation_analyses",

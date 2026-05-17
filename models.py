@@ -71,6 +71,9 @@ class TeamQuestion(Base):
     label = Column(String(500), nullable=False)
     enabled = Column(Boolean, default=True)
     is_blocker_type = Column(Boolean, default=False)  # auto-creates Blocker record when answered
+    # Intent tag — frontend maps answers by canonical kind instead of position.
+    # One of: 'yesterday' | 'today' | 'wins' | 'blockers' | 'other'
+    canonical_kind = Column(String(20), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -191,6 +194,10 @@ class AutomationAnalysis(Base):
     task_count        = Column(Integer, nullable=True)
     is_empty          = Column(Boolean, nullable=False, default=False)
     llm_response_json = Column(Text, nullable=True)   # raw JSON blob returned by the LLM; avoids re-calling on repeat fetches
+    # Ai Task Radar metrics rollup (migration 0006) — summed from this run's tasks
+    weekly_hours_saved        = Column(Float, nullable=True)     # Σ task weekly_hours_saved
+    monthly_cost_saved_usd    = Column(Float, nullable=True)     # Σ task monthly_cost_saved_usd
+    high_priority_task_count  = Column(Integer, nullable=True)   # count of tier == 'P1'
     created_at        = Column(DateTime, nullable=False, default=datetime.utcnow, server_default=func.now())
 
 
@@ -224,6 +231,10 @@ class AutomationTask(Base):
     task_description     = Column(Text, nullable=True)
     automation_score     = Column(Integer, nullable=False, default=0)   # 0..100
     tier                 = Column(String(4), nullable=False, default="P3")  # P1 | P2 | P3
+    # Ai Task Radar per-task metrics (migration 0006)
+    mention_frequency      = Column(Integer, nullable=False, default=0)    # times the pattern recurred in-window
+    weekly_hours_saved     = Column(Float, nullable=False, default=0.0)    # LLM estimate, hrs/wk if automated
+    monthly_cost_saved_usd = Column(Float, nullable=False, default=0.0)    # weekly_hours_saved × member USD rate × 52/12
     suggested_tools_json = Column(Text, nullable=False, default="[]")   # JSON-encoded [{name, prompt}]
     suggested_workflow   = Column(Text, nullable=True)
     general_suggestion   = Column(Text, nullable=True)

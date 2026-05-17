@@ -41,6 +41,24 @@ from llm_service import generate_ai_task_radar
 
 logger = logging.getLogger(__name__)
 
+# Currency → USD multipliers. Kept in sync with routers/reports._RATES_TO_USD;
+# duplicated here so the service layer doesn't import from the routers layer.
+_RATES_TO_USD: dict[str, float] = {
+    "USD": 1.0, "INR": 0.012, "EUR": 1.08, "GBP": 1.27,
+    "AED": 0.27, "SGD": 0.74, "CAD": 0.74, "AUD": 0.65,
+}
+# Weeks per month (52 / 12) — converts a weekly hours figure to a monthly cost.
+_WEEKS_PER_MONTH = 52.0 / 12.0
+
+
+def _member_usd_rate(tm: TeamMember, team: Team) -> float:
+    """Best-effort USD hourly rate: member rate → team rate → 0."""
+    rate = tm.hourly_rate if tm.hourly_rate is not None else team.hourly_rate
+    if rate is None:
+        return 0.0
+    currency = (tm.currency or team.currency or "INR").upper()
+    return float(rate) * _RATES_TO_USD.get(currency, 0.012)
+
 
 # ---------------------------------------------------------------------------
 # Aggregation helpers
@@ -190,6 +208,12 @@ async def run_team_analysis(
     )
     member_tuples = members_rows.all()
 
+    # Per-user USD hourly rate — used to turn the LLM's weekly_hours_saved into a
+    # monthly cost figure deterministically (we never let the LLM invent dollars).
+    user_rate_usd: dict[str, float] = {
+        str(user.id): _member_usd_rate(tm, team) for tm, user in member_tuples
+    }
+
     # ── Load answers for the window (non-blocker questions only) ──────────────
     answers_rows = await db.execute(
         select(CheckinAnswer, TeamQuestion, User, Checkin)
@@ -239,6 +263,9 @@ async def run_team_analysis(
             member_count=len(members_payload),
             task_count=0,
             is_empty=True,
+            weekly_hours_saved=0.0,
+            monthly_cost_saved_usd=0.0,
+            high_priority_task_count=0,
         )
         db.add(record)
         await db.commit()
@@ -288,6 +315,9 @@ async def run_team_analysis(
 
     llm_members = llm_result.get("members", []) or []
     total_tasks = 0
+    total_weekly_hours = 0.0
+    total_monthly_cost = 0.0
+    p1_count = 0
     all_tasks_flat: list[dict] = []  # collected for report email
 
     record = AutomationAnalysis(
@@ -318,9 +348,22 @@ async def run_team_analysis(
         if resolved_user_id is None:
             resolved_user_id = name_to_user_id.get((m.get("name") or "").strip().lower())
 
+        rate_usd = user_rate_usd.get(str(resolved_user_id), 0.0) if resolved_user_id else 0.0
+
         for task in m.get("tasks", []) or []:
             score = int(task.get("automation_score") or 0)
             tier = task.get("tier") or "P3"
+
+            try:
+                mention_frequency = max(0, int(task.get("mention_frequency") or 0))
+            except (TypeError, ValueError):
+                mention_frequency = 0
+            try:
+                weekly_hours_saved = max(0.0, float(task.get("weekly_hours_saved") or 0))
+            except (TypeError, ValueError):
+                weekly_hours_saved = 0.0
+            monthly_cost_saved_usd = round(weekly_hours_saved * rate_usd * _WEEKS_PER_MONTH, 2)
+
             db.add(AutomationTask(
                 analysis_id=record.id,
                 user_id=resolved_user_id,
@@ -329,11 +372,18 @@ async def run_team_analysis(
                 task_description=task.get("task_description"),
                 automation_score=score,
                 tier=tier,
+                mention_frequency=mention_frequency,
+                weekly_hours_saved=round(weekly_hours_saved, 2),
+                monthly_cost_saved_usd=monthly_cost_saved_usd,
                 suggested_tools_json=json.dumps(task.get("suggested_tools") or []),
                 suggested_workflow=task.get("suggested_workflow"),
                 general_suggestion=task.get("general_suggestion"),
                 source="checkin",
             ))
+            total_weekly_hours += weekly_hours_saved
+            total_monthly_cost += monthly_cost_saved_usd
+            if tier == "P1":
+                p1_count += 1
             all_tasks_flat.append({
                 "title": (task.get("task_title") or "Untitled task")[:100],
                 "score": score,
@@ -343,6 +393,9 @@ async def run_team_analysis(
             total_tasks += 1
 
     record.task_count = total_tasks
+    record.weekly_hours_saved = round(total_weekly_hours, 2)
+    record.monthly_cost_saved_usd = round(total_monthly_cost, 2)
+    record.high_priority_task_count = p1_count
     await db.commit()
     await db.refresh(record)
 

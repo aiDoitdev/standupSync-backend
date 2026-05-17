@@ -16,11 +16,11 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import and_, select
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import require_manager, require_team_manager
@@ -30,7 +30,9 @@ from models import (
     AutomationIntegration,
     AutomationSchedule,
     AutomationTask,
+    Blocker,
     Team,
+    TeamMember,
     User,
 )
 from schemas import (
@@ -39,14 +41,25 @@ from schemas import (
     AiTaskRadarAnalysisDetail,
     AiTaskRadarAnalysisSummary,
     AiTaskRadarMember,
+    AiTaskRadarInsight,
     AiTaskRadarMemberDetail,
+    AiTaskRadarPlaybook,
+    AiTaskRadarPlaybookSummary,
     AiTaskRadarRunRequest,
+    AiTaskRadarTeamPotentialRow,
+    AiTaskRadarTrend,
+    AiTaskRadarTrendPoint,
     AiTaskSuggestionTool,
     AutomationIntegrationProvider,
     AutomationScheduleRequest,
     AutomationScheduleResponse,
 )
-from ai_task_radar_service import compute_next_run_at, run_team_analysis
+from ai_task_radar_service import (
+    _RATES_TO_USD,
+    _WEEKS_PER_MONTH,
+    compute_next_run_at,
+    run_team_analysis,
+)
 from plan_limits import require_starter as _require_starter_base
 
 logger = logging.getLogger(__name__)
@@ -87,6 +100,9 @@ def _analysis_to_summary(a: AutomationAnalysis) -> AiTaskRadarAnalysisSummary:
         team_score=a.team_score,
         member_count=a.member_count,
         task_count=a.task_count,
+        weekly_hours_saved=a.weekly_hours_saved,
+        monthly_cost_saved_usd=a.monthly_cost_saved_usd,
+        high_priority_task_count=a.high_priority_task_count,
         is_empty=bool(a.is_empty),
         summary_text=a.summary_text,
         error_message=a.error_message,
@@ -117,6 +133,9 @@ def _task_to_schema(t: AutomationTask) -> AiTask:
         task_description=t.task_description,
         automation_score=t.automation_score,
         tier=t.tier,
+        mention_frequency=t.mention_frequency or 0,
+        weekly_hours_saved=t.weekly_hours_saved or 0.0,
+        monthly_cost_saved_usd=t.monthly_cost_saved_usd or 0.0,
         suggested_tools=tools,
         suggested_workflow=t.suggested_workflow,
         general_suggestion=t.general_suggestion,
@@ -265,15 +284,29 @@ async def upsert_schedule(
 @router.get("/{team_id}/history", response_model=list[AiTaskRadarAnalysisSummary])
 async def list_history(
     team_id: str,
+    as_of: Optional[str] = Query(None, description="YYYY-MM-DD — only analyses run on/before this date"),
     current_user: User = Depends(require_manager),
     db: AsyncSession = Depends(get_db),
 ):
     team, _ = await require_team_manager(team_id, current_user, db)
     _require_starter(current_user)
 
+    conditions = [AutomationAnalysis.team_id == team.id]
+    if as_of:
+        try:
+            as_of_date = datetime.strptime(as_of, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="as_of must be a valid YYYY-MM-DD date",
+            )
+        # inclusive of the whole day
+        cutoff = datetime.combine(as_of_date, datetime.max.time())
+        conditions.append(AutomationAnalysis.created_at <= cutoff)
+
     result = await db.execute(
         select(AutomationAnalysis)
-        .where(AutomationAnalysis.team_id == team.id)
+        .where(and_(*conditions))
         .order_by(AutomationAnalysis.created_at.desc())
         .limit(52)   # ~one year of weekly runs
     )
@@ -447,6 +480,286 @@ async def admin_run_analysis(
         created_by_user_id=current_user.id,
     )
     return _analysis_to_summary(record)
+
+
+# ---------------------------------------------------------------------------
+# Trend over time (ATR-5)
+# ---------------------------------------------------------------------------
+
+_TREND_RANGE_DAYS = {"7d": 7, "30d": 30, "90d": 90}
+
+
+@router.get("/{team_id}/trend", response_model=AiTaskRadarTrend)
+async def get_trend(
+    team_id: str,
+    range: str = Query("30d"),
+    current_user: User = Depends(require_manager),
+    db: AsyncSession = Depends(get_db),
+):
+    """team_score over time, one point per analysis run within the range
+    (latest run wins when several land on the same day)."""
+    team, _ = await require_team_manager(team_id, current_user, db)
+    _require_starter(current_user)
+
+    days = _TREND_RANGE_DAYS.get(range)
+    if days is None:
+        range, days = "30d", 30
+
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    result = await db.execute(
+        select(AutomationAnalysis)
+        .where(
+            and_(
+                AutomationAnalysis.team_id == team.id,
+                AutomationAnalysis.status == "completed",
+                AutomationAnalysis.team_score.isnot(None),
+                AutomationAnalysis.created_at >= since.replace(tzinfo=None),
+            )
+        )
+        .order_by(AutomationAnalysis.created_at.asc())
+    )
+    by_day: dict[str, int] = {}
+    for a in result.scalars().all():
+        day = (a.created_at or datetime.now(timezone.utc)).date().isoformat()
+        by_day[day] = int(a.team_score or 0)  # later run on same day overwrites
+
+    points = [AiTaskRadarTrendPoint(date=d, value=v) for d, v in sorted(by_day.items())]
+    return AiTaskRadarTrend(range=range, points=points)
+
+
+# ---------------------------------------------------------------------------
+# Playbook (ATR-1)
+# ---------------------------------------------------------------------------
+
+async def _latest_usable_analysis(db: AsyncSession, team: Team) -> Optional[AutomationAnalysis]:
+    """Most recent completed analysis for the team (may be empty)."""
+    res = await db.execute(
+        select(AutomationAnalysis)
+        .where(and_(AutomationAnalysis.team_id == team.id, AutomationAnalysis.status == "completed"))
+        .order_by(AutomationAnalysis.created_at.desc())
+        .limit(1)
+    )
+    return res.scalar_one_or_none()
+
+
+async def _monthly_payroll_usd(db: AsyncSession, team: Team) -> float:
+    """Σ over active members of (USD hourly rate × hours/day × 5 days × 52/12 weeks)."""
+    rows = await db.execute(
+        select(TeamMember).where(and_(TeamMember.team_id == team.id, TeamMember.status == "active"))
+    )
+    total = 0.0
+    for tm in rows.scalars().all():
+        rate = tm.hourly_rate if tm.hourly_rate is not None else team.hourly_rate
+        if rate is None:
+            continue
+        cur = (tm.currency or team.currency or "INR").upper()
+        rate_usd = float(rate) * _RATES_TO_USD.get(cur, 0.012)
+        hpd = tm.hours_per_day if tm.hours_per_day else 8.0
+        total += rate_usd * hpd * 5.0 * _WEEKS_PER_MONTH
+    return total
+
+
+def _render_playbook_md(team: Team, a: AutomationAnalysis, tasks: list[AutomationTask]) -> str:
+    lines: list[str] = []
+    lines.append(f"# Automation Playbook — {team.name}")
+    lines.append("")
+    lines.append(f"_Window: {a.period_start} → {a.period_end} ({a.window_days} days)_")
+    lines.append("")
+    lines.append(
+        f"**Potential:** {round(a.weekly_hours_saved or 0, 1)} hours/week back to the team — "
+        f"about ${round(a.monthly_cost_saved_usd or 0):,}/month."
+    )
+    lines.append("")
+    lines.append("---")
+    for i, t in enumerate(tasks, start=1):
+        lines.append("")
+        lines.append(f"## {i}. {t.task_title}  ·  {t.tier}")
+        if t.task_description:
+            lines.append("")
+            lines.append(t.task_description)
+        lines.append("")
+        lines.append(
+            f"- **Automation score:** {t.automation_score}/100\n"
+            f"- **Recurs:** {t.mention_frequency or 0}× in window\n"
+            f"- **Time back:** {round(t.weekly_hours_saved or 0, 1)} hrs/week\n"
+            f"- **Cost saved:** ${round(t.monthly_cost_saved_usd or 0):,}/month"
+        )
+        tools_raw: list = []
+        if t.suggested_tools_json:
+            try:
+                parsed = json.loads(t.suggested_tools_json)
+                if isinstance(parsed, list):
+                    tools_raw = parsed
+            except (json.JSONDecodeError, TypeError):
+                tools_raw = []
+        if tools_raw:
+            lines.append("")
+            lines.append("**Suggested tools**")
+            for item in tools_raw:
+                if isinstance(item, dict) and item.get("name"):
+                    lines.append(f"- **{item['name']}**")
+                    if item.get("prompt"):
+                        lines.append(f"  - Prompt: `{item['prompt']}`")
+                elif isinstance(item, str) and item.strip():
+                    lines.append(f"- **{item.strip()}**")
+        if t.suggested_workflow:
+            lines.append("")
+            lines.append("**Workflow**")
+            lines.append("")
+            lines.append(t.suggested_workflow)
+        if t.general_suggestion:
+            lines.append("")
+            lines.append(f"> {t.general_suggestion}")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    lines.append("_Generated by StandupSync AI Task Radar._")
+    return "\n".join(lines)
+
+
+def _safe_filename(team_name: str, period_end) -> str:
+    slug = "".join(c if c.isalnum() else "-" for c in (team_name or "team")).strip("-").lower()
+    slug = slug or "team"
+    return f"automation-playbook-{slug}-{period_end}.md"
+
+
+@router.get("/{team_id}/playbook-summary", response_model=AiTaskRadarPlaybookSummary)
+async def get_playbook_summary(
+    team_id: str,
+    current_user: User = Depends(require_manager),
+    db: AsyncSession = Depends(get_db),
+):
+    team, _ = await require_team_manager(team_id, current_user, db)
+    _require_starter(current_user)
+
+    analysis = await _latest_usable_analysis(db, team)
+    if analysis is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No analysis available yet")
+
+    weekly = float(analysis.weekly_hours_saved or 0.0)
+    cost = float(analysis.monthly_cost_saved_usd or 0.0)
+    payroll = await _monthly_payroll_usd(db, team)
+    payroll_pct: Optional[int] = None
+    if payroll > 0:
+        payroll_pct = max(0, min(100, round(cost / payroll * 100)))
+
+    return AiTaskRadarPlaybookSummary(
+        analysis_id=str(analysis.id),
+        tasks_count=min(5, analysis.task_count or 0),
+        weekly_hours_saved=round(weekly, 2),
+        monthly_cost_saved_usd=round(cost, 2),
+        payroll_pct=payroll_pct,
+        generated_available=not bool(analysis.is_empty) and (analysis.task_count or 0) > 0,
+    )
+
+
+@router.post("/{team_id}/generate-playbook", response_model=AiTaskRadarPlaybook)
+async def generate_playbook(
+    team_id: str,
+    current_user: User = Depends(require_manager),
+    db: AsyncSession = Depends(get_db),
+):
+    team, _ = await require_team_manager(team_id, current_user, db)
+    _require_starter(current_user)
+
+    analysis = await _latest_usable_analysis(db, team)
+    if analysis is None or analysis.is_empty or not (analysis.task_count or 0):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No tasks available to build a playbook. Run an analysis with check-in data first.",
+        )
+
+    tasks_result = await db.execute(
+        select(AutomationTask)
+        .where(AutomationTask.analysis_id == analysis.id)
+        .order_by(AutomationTask.automation_score.desc(), AutomationTask.created_at.asc())
+    )
+    tasks = list(tasks_result.scalars().all())
+
+    return AiTaskRadarPlaybook(
+        analysis_id=str(analysis.id),
+        filename=_safe_filename(team.name, analysis.period_end),
+        markdown=_render_playbook_md(team, analysis, tasks),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Insights + multi-team rollup (ATR-3, ATR-6)
+# ---------------------------------------------------------------------------
+
+async def _open_blockers_count(db: AsyncSession, team_id) -> int:
+    res = await db.execute(
+        select(func.count())
+        .select_from(Blocker)
+        .where(and_(Blocker.team_id == team_id, Blocker.status != "resolved"))
+    )
+    return int(res.scalar() or 0)
+
+
+@router.get("/{team_id}/insights", response_model=list[AiTaskRadarInsight])
+async def get_insights(
+    team_id: str,
+    current_user: User = Depends(require_manager),
+    db: AsyncSession = Depends(get_db),
+):
+    """Categorised insights derived from the latest analysis + open blockers.
+    Returns [] when there's nothing actionable (frontend hides the panel)."""
+    team, _ = await require_team_manager(team_id, current_user, db)
+    _require_starter(current_user)
+
+    analysis = await _latest_usable_analysis(db, team)
+    if analysis is None or analysis.is_empty:
+        return []
+
+    p1 = analysis.high_priority_task_count or 0
+    weekly = float(analysis.weekly_hours_saved or 0.0)
+    open_blockers = await _open_blockers_count(db, team.id)
+
+    insights: list[AiTaskRadarInsight] = []
+    if p1 > 0:
+        insights.append(AiTaskRadarInsight(
+            id="opportunity", kind="opportunity",
+            title="High automation opportunity",
+            sub=f"{p1} task{'s' if p1 != 1 else ''} scored P1 — strong, ready-to-automate candidates.",
+        ))
+    if open_blockers > 0:
+        insights.append(AiTaskRadarInsight(
+            id="blocker", kind="blocker",
+            title="Potential blockers detected",
+            sub=f"{open_blockers} open blocker{'s' if open_blockers != 1 else ''} may be slowing delivery.",
+        ))
+    if weekly > 0:
+        insights.append(AiTaskRadarInsight(
+            id="time", kind="time",
+            title="Time savings opportunity",
+            sub=f"Automating the top tasks could save ~{round(weekly, 1)} hrs/week across the team.",
+        ))
+    return insights
+
+
+@router.get("/account/team-potential", response_model=list[AiTaskRadarTeamPotentialRow])
+async def account_team_potential(
+    current_user: User = Depends(require_manager),
+    db: AsyncSession = Depends(get_db),
+):
+    """Automation potential for every team the manager owns — real scores + open
+    blocker counts, sorted by score descending."""
+    _require_starter(current_user)
+
+    teams_res = await db.execute(select(Team).where(Team.manager_id == current_user.id))
+    teams = teams_res.scalars().all()
+
+    rows: list[AiTaskRadarTeamPotentialRow] = []
+    for t in teams:
+        a = await _latest_usable_analysis(db, t)
+        rows.append(AiTaskRadarTeamPotentialRow(
+            team_id=str(t.id),
+            name=t.name,
+            blockers=await _open_blockers_count(db, t.id),
+            score=int(a.team_score or 0) if a else 0,
+        ))
+    rows.sort(key=lambda r: -r.score)
+    return rows
 
 
 # ---------------------------------------------------------------------------

@@ -98,6 +98,9 @@ class MemberStatusResponse(BaseModel):
 # Team Questions (Issue 4)
 # ---------------------------------------------------------------------------
 
+CanonicalKind = Literal["yesterday", "today", "wins", "blockers", "other"]
+
+
 class TeamQuestionResponse(BaseModel):
     id: str
     team_id: str
@@ -105,6 +108,7 @@ class TeamQuestionResponse(BaseModel):
     label: str
     enabled: bool
     is_blocker_type: bool
+    canonical_kind: Optional[CanonicalKind] = None
     created_at: datetime
 
 
@@ -112,6 +116,7 @@ class TeamQuestionCreateRequest(BaseModel):
     label: str
     enabled: bool = True
     is_blocker_type: bool = False
+    canonical_kind: Optional[CanonicalKind] = None
 
 
 class TeamQuestionUpdateRequest(BaseModel):
@@ -119,6 +124,7 @@ class TeamQuestionUpdateRequest(BaseModel):
     enabled: Optional[bool] = None
     is_blocker_type: Optional[bool] = None
     order_index: Optional[int] = None
+    canonical_kind: Optional[CanonicalKind] = None
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +261,11 @@ class BlockerListItemResponse(BaseModel):
     updated_at: Optional[datetime]
     comment_count: int
     resolved_at: Optional[datetime]
+    # Blocker Intelligence extensions (BI-4)
+    category: Optional[str] = None
+    revenue_impact_usd: Optional[float] = None
+    revenue_impact_label: Optional[str] = None
+    open_label: Optional[str] = None
 
 
 class AssignBlockerRequest(BaseModel):
@@ -330,6 +341,89 @@ class UserTeamsResponse(BaseModel):
     plan_status: str = "active"
     created_at: datetime
     team_type: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Teams overview / status (T1, T2)
+# ---------------------------------------------------------------------------
+
+class TeamsOverviewCheckinsResponse(BaseModel):
+    completed: int
+    expected: int
+    completion_pct: float
+
+
+class TeamsOverviewSummaryResponse(BaseModel):
+    """T1: Aggregate KPIs for the /teams page header (4 cards)."""
+    date: date
+    active_teams: int
+    checkins: TeamsOverviewCheckinsResponse
+    active_blockers_total: int
+    revenue_at_risk_usd: float
+
+
+class TeamStatusRowResponse(BaseModel):
+    """T2: One row per team for the /teams list page."""
+    id: str
+    name: str
+    plan: str
+    user_role: str            # 'owner' | 'member'
+    team_type: Optional[str] = None
+    member_count: int
+    checked_in_count: int
+    pending_count: int
+    alert_count: int
+
+
+class TeamsStatusResponse(BaseModel):
+    date: date
+    teams: List[TeamStatusRowResponse]
+
+
+# ---------------------------------------------------------------------------
+# Team health (T3)
+# ---------------------------------------------------------------------------
+
+class CheckinRatePoint(BaseModel):
+    date: date
+    rate_pct: float
+
+
+class TeamHealthResponse(BaseModel):
+    """T3: 30d (or 7d/90d) health for /teams/{teamid} right panel."""
+    range: Literal["7d", "30d", "90d"]
+    start_date: date
+    end_date: date
+    checkin_rate_pct: float
+    checkin_rate_delta_pct: float          # percentage points vs the prior equal window
+    avg_streak_days: float
+    open_blockers: int
+    open_blockers_delta_vs_last_week: int
+    checkin_rate_series: List[CheckinRatePoint]
+
+
+# ---------------------------------------------------------------------------
+# Nudge suggestion (T4)
+# ---------------------------------------------------------------------------
+
+class NudgeAction(BaseModel):
+    kind: Literal["send_now"]
+    endpoint: str             # frontend hits this to actually send the nudge
+
+
+class NudgeSuggestionResponse(BaseModel):
+    """T4: AI banner copy + target user for /teams/{teamid}.
+
+    The endpoint returns 204 No Content (no response body) when no nudge is
+    appropriate (e.g. 100% checked in or no pending members).
+    """
+    headline: str
+    subtitle: str
+    target_user_id: str
+    target_user_name: str
+    target_recent_checkin_rate_pct: float    # member's last-7-day check-in rate
+    completion_pct: float                    # team's % checked-in right now
+    action: NudgeAction
 
 
 # ---------------------------------------------------------------------------
@@ -450,6 +544,9 @@ class AiTask(BaseModel):
     task_description: Optional[str]
     automation_score: int
     tier: str
+    mention_frequency: int = 0
+    weekly_hours_saved: float = 0.0
+    monthly_cost_saved_usd: float = 0.0
     suggested_tools: List[AiTaskSuggestionTool]
     suggested_workflow: Optional[str]
     general_suggestion: Optional[str]
@@ -473,6 +570,9 @@ class AiTaskRadarAnalysisSummary(BaseModel):
     team_score: Optional[int]
     member_count: Optional[int]
     task_count: Optional[int]
+    weekly_hours_saved: Optional[float] = None
+    monthly_cost_saved_usd: Optional[float] = None
+    high_priority_task_count: Optional[int] = None
     is_empty: bool
     summary_text: Optional[str]
     error_message: Optional[str]
@@ -499,6 +599,46 @@ class AiTaskRadarAdminRunRequest(BaseModel):
 
 class AiTaskRadarRunRequest(BaseModel):
     window_days: Literal[7, 14, 30] = 7
+
+
+class AiTaskRadarPlaybookSummary(BaseModel):
+    """Backs the top-of-page playbook banner (ATR-1)."""
+    analysis_id: str
+    tasks_count: int                       # top-N tasks the playbook would cover
+    weekly_hours_saved: float
+    monthly_cost_saved_usd: float
+    payroll_pct: Optional[int]             # cost saved as % of monthly engineering payroll
+    generated_available: bool              # false when the latest analysis is empty
+
+
+class AiTaskRadarInsight(BaseModel):
+    id: str
+    kind: str          # 'opportunity' | 'blocker' | 'time'
+    title: str
+    sub: str
+
+
+class AiTaskRadarTeamPotentialRow(BaseModel):
+    team_id: str
+    name: str
+    blockers: int
+    score: int
+
+
+class AiTaskRadarTrendPoint(BaseModel):
+    date: str          # YYYY-MM-DD
+    value: int         # team_score 0..100
+
+
+class AiTaskRadarTrend(BaseModel):
+    range: str         # '7d' | '30d' | '90d'
+    points: List[AiTaskRadarTrendPoint]
+
+
+class AiTaskRadarPlaybook(BaseModel):
+    analysis_id: str
+    filename: str
+    markdown: str
 
 
 class AutomationIntegrationProvider(BaseModel):

@@ -728,15 +728,48 @@ async def monthly_cost(
     members_list = sorted(
         member_costs.values(), key=lambda r: r["cost_usd"], reverse=True
     )
+    rounded_total = round(total_cost_usd, 2)
     for m in members_list:
         m["cost_usd"] = round(m["cost_usd"], 2)
+        m["pct_of_total"] = round((m["cost_usd"] / rounded_total) * 100, 1) if rounded_total > 0 else 0.0
+
+    # Available months: months that have at least one blocker overlap, plus the current month.
+    # Earliest blocker for the team bounds the lower edge.
+    first_result = await db.execute(
+        select(Blocker.created_at)
+        .where(Blocker.team_id == team.id)
+        .order_by(Blocker.created_at.asc())
+        .limit(1)
+    )
+    first_row = first_result.scalar_one_or_none()
+    available_months: list[dict] = []
+    if first_row is not None:
+        first_ym = (first_row.year, first_row.month)
+        cur_ym = (now.year, now.month)
+        y, m = first_ym
+        while (y, m) <= cur_ym:
+            label = datetime(y, m, 1).strftime("%b %Y")
+            available_months.append({"year": y, "month": m, "label": label})
+            m += 1
+            if m > 12:
+                m = 1
+                y += 1
+    else:
+        available_months.append({
+            "year": now.year,
+            "month": now.month,
+            "label": now.strftime("%b %Y"),
+        })
 
     return {
         "year": year,
         "month": month,
-        "total_cost_usd": round(total_cost_usd, 2),
+        "month_label": datetime(year, month, 1).strftime("%b %Y"),
+        "total_cost_usd": rounded_total,
         "blocker_count": total_blocker_count,
+        "total_blocker_count": total_blocker_count,
         "members": members_list,
+        "available_months": available_months,
     }
 
 

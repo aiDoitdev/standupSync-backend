@@ -9,7 +9,14 @@ from models import (
     BlockerComment,
     BlockerResolution,
     Team,
+    TeamMember,
     User,
+)
+from routers.blocker_intelligence import (
+    infer_category as _infer_category,
+    _hourly_rate_usd,
+    _fmt_duration,
+    _impact_label,
 )
 from schemas import (
     BlockerListItemResponse,
@@ -77,6 +84,15 @@ async def list_blockers(
     result = await db.execute(query)
     blockers = result.scalars().all()
 
+    # Preload active team members keyed by user_id for hourly-rate lookup
+    members_result = await db.execute(
+        select(TeamMember, User)
+        .join(User, TeamMember.user_id == User.id)
+        .where(and_(TeamMember.team_id == team.id, TeamMember.status == "active"))
+    )
+    member_map = {str(user.id): (tm, user) for tm, user in members_result.all()}
+
+    now = datetime.utcnow()
     response = []
     for blocker in blockers:
         # Get comment count
@@ -98,6 +114,21 @@ async def list_blockers(
             assigned_user = assigned_result.scalar_one_or_none()
             assigned_to_name = assigned_user.name if assigned_user else None
 
+        # ── Blocker Intelligence enrichment (BI-4) ─────────────────────────
+        category = _infer_category(blocker.title)
+        owner_id = str(blocker.assigned_to) if blocker.assigned_to else str(blocker.user_id)
+        tm = member_map.get(owner_id, (None, None))[0]
+        rate = _hourly_rate_usd(tm)
+        if blocker.status == "resolved":
+            open_label = "—"
+            revenue_impact_usd = None
+            revenue_impact_label = ""
+        else:
+            hours_open = max(0.0, (now - blocker.created_at).total_seconds() / 3600)
+            open_label = _fmt_duration(hours_open)
+            revenue_impact_usd = round(rate * hours_open, 2) if rate is not None else None
+            revenue_impact_label = _impact_label(category, hours_open, blocker.status)
+
         response.append(
             BlockerListItemResponse(
                 id=str(blocker.id),
@@ -112,6 +143,10 @@ async def list_blockers(
                 updated_at=blocker.updated_at,
                 comment_count=comment_count,
                 resolved_at=blocker.resolved_at,
+                category=category,
+                revenue_impact_usd=revenue_impact_usd,
+                revenue_impact_label=revenue_impact_label,
+                open_label=open_label,
             )
         )
 

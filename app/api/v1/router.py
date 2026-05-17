@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.v1 import auth, teams, checkin, invite, waitlist, blockers, billing, reports, automation, ai_task_radar
+from app.api.v1 import auth, teams, checkin, invite, waitlist, blockers, billing, reports, automation, ai_task_radar, dashboard
 
 router = APIRouter(prefix="/v1")
 
@@ -14,3 +14,4 @@ router.include_router(billing.router,       prefix="/billing",      tags=["billi
 router.include_router(reports.router,       prefix="/reports",      tags=["reports"])
 router.include_router(automation.router,    prefix="/automation",   tags=["automation"])
 router.include_router(ai_task_radar.router, prefix="/ai-task-radar", tags=["ai-task-radar"])
+router.include_router(dashboard.router,     prefix="/dashboard",    tags=["dashboard"])

@@ -309,6 +309,8 @@ def _build_radar_prompt(team_name: str, members_payload: list[dict], window_days
         '          "task_description": "<1-2 sentence description>",\n'
         '          "automation_score": <0-100 integer>,\n'
         '          "tier": "P1" | "P2" | "P3",\n'
+        '          "mention_frequency": <integer — how many times this recurring pattern appears across the member\'s phrases in this window>,\n'
+        '          "weekly_hours_saved": <number — realistic hours per week this member would get back if this task were automated>,\n'
         '          "suggested_tools": [ { "name": "<tool>", "prompt": "<ready prompt or null>" } ],\n'
         '          "suggested_workflow": "<step-by-step text, only for P3; otherwise null>",\n'
         '          "general_suggestion": "<one-paragraph suggestion, only for P2; otherwise null>"\n'
@@ -320,6 +322,8 @@ def _build_radar_prompt(team_name: str, members_payload: list[dict], window_days
         "Rules:\n"
         "- If a member has no actionable tasks, include them with an empty tasks array and member_score=0.\n"
         "- suggested_tools MUST be non-empty only when tier='P1'; for P2/P3 it can be an empty array.\n"
+        "- mention_frequency must be >= 1 and reflect how often the pattern actually recurs in the phrases.\n"
+        "- weekly_hours_saved must be a realistic non-negative number (typically 0.2-8.0 per task).\n"
         "- Never invent members that are not in the input.\n"
         "- Return the same user_id string you received (do not modify UUIDs)."
     )
@@ -374,6 +378,8 @@ def _parse_and_validate_radar(raw: str) -> dict:
                 continue
             t.setdefault("task_description", "")
             t.setdefault("automation_score", 0)
+            t.setdefault("mention_frequency", 0)
+            t.setdefault("weekly_hours_saved", 0)
             tier = str(t.get("tier") or "P3").upper()
             if tier not in ("P1", "P2", "P3"):
                 tier = "P3"

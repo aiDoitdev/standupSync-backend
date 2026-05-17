@@ -11,7 +11,7 @@ import structlog
 from database import engine, Base
 from rate_limiter import limiter
 from scheduler import start_scheduler
-from routers import auth, teams, checkin, invite, waitlist, blockers, billing, reports, automation, ai_task_radar
+from routers import auth, teams, checkin, invite, waitlist, blockers, blocker_intelligence, billing, reports, automation, ai_task_radar
 
 # ── Structured logging setup ────────────────────────────────────────────────
 _ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
@@ -85,6 +85,7 @@ _v1.include_router(teams.router,         prefix="/teams",        tags=["teams"])
 _v1.include_router(checkin.router,       prefix="/checkin",      tags=["checkin"])
 _v1.include_router(invite.router,        prefix="/invite",       tags=["invite"])
 _v1.include_router(waitlist.router,      prefix="/waitlist",     tags=["waitlist"])
+_v1.include_router(blocker_intelligence.router, prefix="/blockers/intelligence", tags=["blocker-intelligence"])
 _v1.include_router(blockers.router,      prefix="/blockers",     tags=["blockers"])
 _v1.include_router(billing.router,       prefix="/billing",      tags=["billing"])
 _v1.include_router(reports.router,       prefix="/reports",      tags=["reports"])
